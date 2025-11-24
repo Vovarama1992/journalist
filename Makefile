@@ -2,7 +2,7 @@
 
 # --- быстрый диплой ---
 refresh:
-	git pull origin master
+	git pull origin main
 	docker compose build app
 	docker compose stop app
 	docker compose up -d --no-deps app
@@ -40,7 +40,7 @@ app-logs:
 commit:
 	git add .
 	git commit -m "$${m:-update}"
-	git push origin master
+	git push origin main
 
 # --- миграции ---
 migrate:
