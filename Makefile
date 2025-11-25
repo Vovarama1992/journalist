@@ -10,11 +10,11 @@ refresh:
 
 # --- сборка фронта ---
 build-front:
-	cd front && \
+	cd ../journalist_front && \
 	npm install && \
 	npm run build && \
-	rm -rf ../dist/* && \
-	cp -r dist/* ../dist/
+	rm -rf ../journalist/dist/* && \
+	cp -r dist/* ../journalist/dist/
 
 # --- сборка контейнеров ---
 build:
