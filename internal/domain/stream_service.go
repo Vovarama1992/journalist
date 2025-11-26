@@ -5,6 +5,16 @@ import (
 	"strings"
 )
 
+type StreamService struct {
+	youtube *YoutubeResolver
+}
+
+func NewStreamService() *StreamService {
+	return &StreamService{
+		youtube: NewYoutubeResolver(),
+	}
+}
+
 type StreamInfo struct {
 	Format    string
 	HasVideo  bool
@@ -12,13 +22,21 @@ type StreamInfo struct {
 	RawOutput string
 }
 
-type StreamService struct{}
-
-func NewStreamService() *StreamService {
-	return &StreamService{}
-}
-
 func (s *StreamService) Probe(url string) (*StreamInfo, error) {
+
+	// --- YouTube detection ---
+	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
+		streams, err := s.youtube.Resolve(url)
+		if err != nil {
+			return &StreamInfo{Format: "youtube", RawOutput: err.Error()}, nil
+		}
+		// Берём первый поток для ffprobe
+		if len(streams) > 0 {
+			url = streams[0]
+		}
+	}
+
+	// --- ffprobe ---
 	cmd := exec.Command("ffprobe",
 		"-v", "quiet",
 		"-show_format",
@@ -32,9 +50,9 @@ func (s *StreamService) Probe(url string) (*StreamInfo, error) {
 
 	info := &StreamInfo{
 		Format:    "unknown",
+		RawOutput: raw,
 		HasVideo:  strings.Contains(raw, `"codec_type":"video"`),
 		HasAudio:  strings.Contains(raw, `"codec_type":"audio"`),
-		RawOutput: raw,
 	}
 
 	if strings.Contains(raw, `"format_name"`) {
