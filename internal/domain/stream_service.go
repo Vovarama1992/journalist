@@ -23,51 +23,27 @@ func NewStreamService(log *logger.ZapLogger) *StreamService {
 }
 
 func (s *StreamService) Probe(url string) (*StreamInfo, error) {
-
 	s.log.Log(logger.LogEntry{
 		Level:   "info",
 		Message: "probe: start",
 		Fields:  map[string]any{"url": url},
 	})
 
-	// YOUTUBE
 	resolved := url
 	isYT := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
 
 	if isYT {
-		s.log.Log(logger.LogEntry{
-			Level:   "info",
-			Message: "youtube detected",
-			Fields:  map[string]any{"url": url},
-		})
-
 		u, err := ResolveYouTube(url)
 		if err != nil {
-			s.log.Log(logger.LogEntry{
-				Level:   "error",
-				Message: "yt-dlp failed",
-				Fields:  map[string]any{"error": err.Error()},
-			})
-
-			return &StreamInfo{
-				Format: "youtube",
-				Raw:    err.Error(),
-			}, nil
+			return &StreamInfo{Format: "youtube", Raw: err.Error()}, nil
 		}
-
-		s.log.Log(logger.LogEntry{
-			Level:   "info",
-			Message: "youtube resolved",
-			Fields:  map[string]any{"direct": u},
-		})
-
 		resolved = u
 	}
 
-	// FFPROBE
 	cmd := exec.Command(
 		"ffprobe",
 		"-v", "quiet",
+		"-headers", "User-Agent: Mozilla/5.0",
 		"-show_format",
 		"-show_streams",
 		"-print_format", "json",
@@ -76,20 +52,6 @@ func (s *StreamService) Probe(url string) (*StreamInfo, error) {
 
 	out, err := cmd.CombinedOutput()
 	raw := string(out)
-
-	s.log.Log(logger.LogEntry{
-		Level:   "info",
-		Message: "ffprobe result",
-		Fields:  map[string]any{"raw": raw},
-	})
-
-	if err != nil {
-		s.log.Log(logger.LogEntry{
-			Level:   "error",
-			Message: "ffprobe error",
-			Fields:  map[string]any{"error": err.Error()},
-		})
-	}
 
 	return &StreamInfo{
 		Format: resolved,
