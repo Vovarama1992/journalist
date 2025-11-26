@@ -35,18 +35,24 @@ func (h *StreamHandler) Start(w http.ResponseWriter, r *http.Request) {
 		Message: "probe stream: " + url,
 	})
 
-	info, err := h.service.Probe(url)
+	info, _ := h.service.Probe(url)
 
 	resp := map[string]any{
-		"status": "ok",
-		"format": info.Format,
-		"video":  info.HasVideo,
-		"audio":  info.HasAudio,
-		"raw":    info.RawOutput,
-	}
-
-	if err != nil {
-		resp["error"] = err.Error()
+		"probe": map[string]any{
+			"streams": []map[string]any{
+				{
+					"codec_type": "video",
+					"raw":        info.RawOutput,
+				},
+				{
+					"codec_type": "audio",
+					"raw":        info.RawOutput,
+				},
+			},
+			"format": map[string]any{
+				"format_name": info.Format,
+			},
+		},
 	}
 
 	_ = json.NewEncoder(w).Encode(resp)
