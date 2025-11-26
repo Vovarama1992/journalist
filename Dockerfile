@@ -4,15 +4,13 @@ WORKDIR /app
 
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/main.go
 
 # --- stage 2: runner ---
 FROM debian:stable-slim
 
-RUN apt update && apt install -y ffmpeg ca-certificates python3 python3-pip && apt clean
-RUN pip3 install yt-dlp
+RUN apt update && apt install -y ffmpeg ca-certificates yt-dlp && apt clean
 
 WORKDIR /app
 COPY --from=builder /app/server /app/server
