@@ -14,9 +14,9 @@ FROM debian:stable-slim
 
 RUN apt update && \
     apt install -y ffmpeg ca-certificates python3 python3-pip && \
-    pip3 install yt-dlp && \
+    pip3 install --break-system-packages yt-dlp && \
     apt clean
-
+    
 WORKDIR /app
 COPY --from=builder /app/server /app/server
 
