@@ -40,6 +40,12 @@ func (s *StreamService) Probe(url string) (*StreamInfo, error) {
 		resolved = u
 	}
 
+	s.log.Log(logger.LogEntry{
+		Level:   "info",
+		Message: "resolved url",
+		Fields:  map[string]any{"url": resolved},
+	})
+
 	cmd := exec.Command(
 		"ffprobe",
 		"-v", "quiet",
@@ -52,6 +58,20 @@ func (s *StreamService) Probe(url string) (*StreamInfo, error) {
 
 	out, err := cmd.CombinedOutput()
 	raw := string(out)
+
+	s.log.Log(logger.LogEntry{
+		Level:   "info",
+		Message: "ffprobe raw",
+		Fields:  map[string]any{"raw": raw},
+	})
+
+	if err != nil {
+		s.log.Log(logger.LogEntry{
+			Level:   "error",
+			Message: "ffprobe error",
+			Fields:  map[string]any{"error": err.Error()},
+		})
+	}
 
 	return &StreamInfo{
 		Format: resolved,
