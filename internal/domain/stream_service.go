@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"os/exec"
 	"strings"
 
@@ -12,10 +13,11 @@ type StreamService struct {
 }
 
 type StreamInfo struct {
-	Format string `json:"format"`
-	Raw    string `json:"raw"`
-	Video  bool   `json:"video"`
-	Audio  bool   `json:"audio"`
+	Source      string `json:"source"`
+	ResolvedURL string `json:"resolved_url"`
+	HasVideo    bool   `json:"has_video"`
+	HasAudio    bool   `json:"has_audio"`
+	Summary     string `json:"summary"`
 }
 
 func NewStreamService(log *logger.ZapLogger) *StreamService {
@@ -30,12 +32,20 @@ func (s *StreamService) Probe(url string) (*StreamInfo, error) {
 	})
 
 	resolved := url
-	isYT := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
+	source := "generic"
 
+	isYT := strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
 	if isYT {
+		source = "youtube"
 		u, err := ResolveYouTube(url)
 		if err != nil {
-			return &StreamInfo{Format: "youtube", Raw: err.Error()}, nil
+			return &StreamInfo{
+				Source:      source,
+				ResolvedURL: "",
+				HasVideo:    false,
+				HasAudio:    false,
+				Summary:     "Не удалось получить прямую ссылку",
+			}, nil
 		}
 		resolved = u
 	}
@@ -59,7 +69,7 @@ func (s *StreamService) Probe(url string) (*StreamInfo, error) {
 		resolved,
 	)
 
-	out, err := cmd.CombinedOutput()
+	out, _ := cmd.CombinedOutput()
 	raw := string(out)
 
 	s.log.Log(logger.LogEntry{
@@ -68,18 +78,41 @@ func (s *StreamService) Probe(url string) (*StreamInfo, error) {
 		Fields:  map[string]any{"raw": raw},
 	})
 
-	if err != nil {
-		s.log.Log(logger.LogEntry{
-			Level:   "error",
-			Message: "ffprobe error",
-			Fields:  map[string]any{"error": err.Error()},
-		})
+	type ffprobeResponse struct {
+		Streams []struct {
+			CodecType string `json:"codec_type"`
+		} `json:"streams"`
+	}
+
+	var parsed ffprobeResponse
+	_ = json.Unmarshal(out, &parsed)
+
+	hasVideo := false
+	hasAudio := false
+
+	for _, st := range parsed.Streams {
+		if st.CodecType == "video" {
+			hasVideo = true
+		}
+		if st.CodecType == "audio" {
+			hasAudio = true
+		}
+	}
+
+	summary := "Нет аудио/видео"
+	if hasVideo && hasAudio {
+		summary = "Есть видео + аудио"
+	} else if hasVideo {
+		summary = "Есть только видео"
+	} else if hasAudio {
+		summary = "Есть только аудио"
 	}
 
 	return &StreamInfo{
-		Format: resolved,
-		Raw:    raw,
-		Video:  strings.Contains(raw, `"codec_type":"video"`),
-		Audio:  strings.Contains(raw, `"codec_type":"audio"`),
-	}, err
+		Source:      source,
+		ResolvedURL: resolved,
+		HasVideo:    hasVideo,
+		HasAudio:    hasAudio,
+		Summary:     summary,
+	}, nil
 }
