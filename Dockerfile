@@ -8,13 +8,14 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/main.go
 
-
 # --- stage 2: runner ---
 FROM debian:stable-slim
 
-# Устанавливаем ffmpeg + python + pip + nodejs (JS runtime)
+# 1. Node.js 20 LTS (официально поддерживается yt-dlp)
 RUN apt update && \
-    apt install -y ffmpeg ca-certificates python3 python3-pip nodejs npm && \
+    apt install -y curl ffmpeg ca-certificates python3 python3-pip && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt install -y nodejs && \
     pip3 install --break-system-packages yt-dlp && \
     apt clean
 
