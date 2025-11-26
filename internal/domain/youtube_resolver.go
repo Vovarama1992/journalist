@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"bytes"
 	"os/exec"
 	"strings"
 )
@@ -15,14 +14,12 @@ func ResolveYouTube(url string) (string, error) {
 		url,
 	)
 
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	err := cmd.Run()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
 	}
 
-	return strings.TrimSpace(out.String()), nil
+	// Берём последнюю строку — там всегда URL
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return lines[len(lines)-1], nil
 }
