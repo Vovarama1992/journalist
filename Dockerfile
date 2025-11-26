@@ -1,29 +1,24 @@
 # --- stage 1: builder ---
-FROM golang:1.25.4-alpine AS builder
-
+FROM golang:1.25 AS builder
 WORKDIR /app
-
-RUN apk add --no-cache git
 
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o app ./cmd/journalist
+RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/main.go
+
 
 # --- stage 2: runner ---
-FROM debian:bookworm-slim
+FROM debian:stable-slim
 
 RUN apt update && \
     apt install -y ffmpeg ca-certificates python3 python3-pip && \
+    pip3 install yt-dlp && \
     apt clean
 
-RUN pip3 install yt-dlp
-
 WORKDIR /app
-COPY --from=builder /app/app /app/app
+COPY --from=builder /app/server /app/server
 
 EXPOSE 8080
-ENV PORT=8080
-
-CMD ["/app/app"]
+CMD ["/app/server"]
