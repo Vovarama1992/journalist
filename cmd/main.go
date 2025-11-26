@@ -52,7 +52,7 @@ func main() {
 
 	// --- services ---
 	authService := domain.NewAuthService(db, secret)
-	streamService := domain.NewStreamService()
+	streamService := domain.NewStreamService(zl) // ← добавили логгер!
 
 	// --- handlers ---
 	authHandler := delivery.NewAuthHandler(authService, zl)

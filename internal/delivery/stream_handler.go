@@ -13,14 +13,8 @@ type StreamHandler struct {
 	service *domain.StreamService
 }
 
-func NewStreamHandler(
-	log *logger.ZapLogger,
-	service *domain.StreamService,
-) *StreamHandler {
-	return &StreamHandler{
-		log:     log,
-		service: service,
-	}
+func NewStreamHandler(log *logger.ZapLogger, service *domain.StreamService) *StreamHandler {
+	return &StreamHandler{log: log, service: service}
 }
 
 func (h *StreamHandler) Start(w http.ResponseWriter, r *http.Request) {
@@ -32,10 +26,18 @@ func (h *StreamHandler) Start(w http.ResponseWriter, r *http.Request) {
 
 	h.log.Log(logger.LogEntry{
 		Level:   "info",
-		Message: "probe stream: " + url,
+		Message: "stream start requested",
+		Fields:  map[string]any{"url": url},
 	})
 
-	info, _ := h.service.Probe(url)
+	info, err := h.service.Probe(url)
+	if err != nil {
+		h.log.Log(logger.LogEntry{
+			Level:   "error",
+			Message: "probe failed",
+			Fields:  map[string]any{"err": err.Error()},
+		})
+	}
 
 	_ = json.NewEncoder(w).Encode(info)
 }

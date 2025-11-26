@@ -4,72 +4,103 @@ import (
 	"encoding/json"
 	"os/exec"
 	"strings"
+
+	"github.com/Vovarama1992/go-utils/logger"
 )
 
 type StreamService struct {
-	youtube *YoutubeResolver
+	log *logger.ZapLogger
 }
 
-func NewStreamService() *StreamService {
-	return &StreamService{
-		youtube: NewYoutubeResolver(),
-	}
+func NewStreamService(log *logger.ZapLogger) *StreamService {
+	return &StreamService{log: log}
 }
 
-type ProbeResult struct {
-	Format  string      `json:"format"`
-	Streams interface{} `json:"streams"`
-	Raw     string      `json:"raw"`
-	Video   bool        `json:"video"`
-	Audio   bool        `json:"audio"`
+type StreamInfo struct {
+	Format   string `json:"format"`
+	Raw      string `json:"raw"`
+	HasVideo bool   `json:"video"`
+	HasAudio bool   `json:"audio"`
 }
 
-func (s *StreamService) Probe(url string) (*ProbeResult, error) {
+func (s *StreamService) Probe(url string) (*StreamInfo, error) {
 
-	// YouTube?
+	s.log.Log(logger.LogEntry{
+		Level:   "info",
+		Message: "start probe",
+		Fields:  map[string]any{"url": url},
+	})
+
+	resolved := url
+
+	// --- YouTube ---
 	if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
-		resolved, err := s.youtube.Resolve(url)
+		s.log.Log(logger.LogEntry{
+			Level:   "info",
+			Message: "youtube detected, running yt-dlp",
+		})
+
+		out, err := exec.Command("yt-dlp", "--dump-json", url).Output()
 		if err != nil {
-			return &ProbeResult{
+			s.log.Log(logger.LogEntry{
+				Level:   "error",
+				Message: "yt-dlp failed",
+				Fields:  map[string]any{"err": err.Error()},
+			})
+
+			return &StreamInfo{
 				Format: "youtube",
-				Raw:    err.Error(),
+				Raw:    string(out),
 			}, nil
 		}
-		if resolved != "" {
-			url = resolved
+
+		var j map[string]any
+		json.Unmarshal(out, &j)
+
+		rf, ok := j["requested_formats"].([]any)
+		if ok && len(rf) > 0 {
+			f0 := rf[0].(map[string]any)
+			if manifest, ok := f0["manifest_url"].(string); ok {
+				resolved = manifest
+
+				s.log.Log(logger.LogEntry{
+					Level:   "info",
+					Message: "youtube manifest resolved",
+					Fields:  map[string]any{"resolved": resolved},
+				})
+			}
 		}
 	}
 
-	// ffprobe
+	// --- ffprobe ---
 	cmd := exec.Command("ffprobe",
 		"-v", "quiet",
 		"-show_format",
 		"-show_streams",
 		"-print_format", "json",
-		url,
+		resolved,
 	)
 
 	out, err := cmd.CombinedOutput()
 	raw := string(out)
 
-	// Парсим структуру
-	var parsed map[string]interface{}
-	_ = json.Unmarshal(out, &parsed)
+	s.log.Log(logger.LogEntry{
+		Level:   "info",
+		Message: "ffprobe result",
+		Fields:  map[string]any{"raw": raw[:min(300, len(raw))]},
+	})
 
-	// flags
-	video := strings.Contains(raw, `"codec_type":"video"`)
-	audio := strings.Contains(raw, `"codec_type":"audio"`)
-
-	format := "unknown"
-	if _, ok := parsed["format"]; ok {
-		format = "detected"
-	}
-
-	return &ProbeResult{
-		Format:  format,
-		Streams: parsed["streams"],
-		Raw:     raw,
-		Video:   video,
-		Audio:   audio,
+	return &StreamInfo{
+		Format:   resolved,
+		Raw:      raw,
+		HasVideo: strings.Contains(raw, `"codec_type":"video"`),
+		HasAudio: strings.Contains(raw, `"codec_type":"audio"`),
 	}, err
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
