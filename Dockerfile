@@ -1,19 +1,19 @@
-# --- stage 1: build ---
-FROM golang:1.25-alpine AS builder
+# --- stage 1: builder ---
+FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 
-# ускоряем сборку
+# чтобы тянуть модули
 RUN apk add --no-cache git
 
 # зависимости
 COPY go.mod go.sum ./
 RUN go mod download
 
-# весь код
+# код
 COPY . .
 
-# собираем бинарь
+# сборка бинаря
 RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/main.go
 
 
@@ -22,10 +22,10 @@ FROM alpine:3.19
 
 WORKDIR /app
 
-# чтобы не было ошибок DNS/SSL
-RUN apk add --no-cache ca-certificates
+# нужные утилиты: сертификаты + ffmpeg/ffprobe
+RUN apk add --no-cache ca-certificates ffmpeg
 
-# копируем бинарь
+# бинарь
 COPY --from=builder /app/server /app/server
 
 EXPOSE 8080

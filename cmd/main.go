@@ -52,10 +52,11 @@ func main() {
 
 	// --- services ---
 	authService := domain.NewAuthService(db, secret)
+	streamService := domain.NewStreamService()
 
 	// --- handlers ---
 	authHandler := delivery.NewAuthHandler(authService, zl)
-	streamHandler := delivery.NewStreamHandler(zl)
+	streamHandler := delivery.NewStreamHandler(zl, streamService)
 
 	// --- router ---
 	r := chi.NewRouter()
