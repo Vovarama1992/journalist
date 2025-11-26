@@ -37,23 +37,5 @@ func (h *StreamHandler) Start(w http.ResponseWriter, r *http.Request) {
 
 	info, _ := h.service.Probe(url)
 
-	resp := map[string]any{
-		"probe": map[string]any{
-			"streams": []map[string]any{
-				{
-					"codec_type": "video",
-					"raw":        info.RawOutput,
-				},
-				{
-					"codec_type": "audio",
-					"raw":        info.RawOutput,
-				},
-			},
-			"format": map[string]any{
-				"format_name": info.Format,
-			},
-		},
-	}
-
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(info)
 }

@@ -1,19 +1,21 @@
-# --- stage 1: builder ---
-FROM golang:1.25 AS builder
-WORKDIR /app
+FROM python:3.13-slim AS ytdlp
 
-COPY go.mod go.sum ./
-RUN go mod download
+RUN apt update && \
+    apt install -y ffmpeg ca-certificates curl && \
+    pip install --break-system-packages yt-dlp
+
+FROM golang:1.22 AS builder
+WORKDIR /app
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o app ./cmd/journalist
 
-# --- stage 2: runner ---
-FROM debian:stable-slim
-
-RUN apt update && apt install -y ffmpeg ca-certificates yt-dlp && apt clean
-
+FROM debian:bookworm-slim
 WORKDIR /app
-COPY --from=builder /app/server /app/server
+
+RUN apt update && apt install -y ffmpeg ca-certificates python3 && apt clean
+
+COPY --from=ytdlp /usr/local/bin/yt-dlp /usr/local/bin/yt-dlp
+COPY --from=builder /app/app /app/app
 
 EXPOSE 8080
-CMD ["/app/server"]
+CMD ["/app/app"]
