@@ -9,8 +9,7 @@ CREATE TABLE media (
 CREATE TABLE media_chunk (
     id SERIAL PRIMARY KEY,
     media_id INT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    chunk_number INT NOT NULL,           -- порядковый номер внутри media
-    data BYTEA NOT NULL,                 -- сырые данные чанка
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    chunk_number INT NOT NULL,
+    text TEXT,     -- сам смысловой чанк
     UNIQUE(media_id, chunk_number)
 );

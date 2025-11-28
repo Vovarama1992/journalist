@@ -1,24 +1,20 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
-	"github.com/Vovarama1992/go-utils/logger"
-	"github.com/Vovarama1992/journalist/internal/delivery"
+	ws "github.com/Vovarama1992/journalist/internal/delivery/ws"
 	"github.com/Vovarama1992/journalist/internal/domain"
+	"github.com/Vovarama1992/journalist/internal/infra"
 	"github.com/go-chi/chi/v5"
-	_ "github.com/lib/pq"
-	"go.uber.org/zap"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
-	// --- logger ---
-	base, _ := zap.NewProduction()
-	zl := logger.NewZapLogger(base.Sugar())
 
 	// --- env ---
 	port := os.Getenv("PORT")
@@ -31,36 +27,42 @@ func main() {
 		log.Fatal("DATABASE_URL is not set")
 	}
 
-	secret := os.Getenv("AUTH_SECRET")
-	if secret == "" {
-		log.Fatal("AUTH_SECRET is not set")
-	}
-
-	// --- db ---
-	db, err := sql.Open("postgres", dsn)
+	// --- postgres (pgxpool) ---
+	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
-		log.Fatalf("failed to connect to postgres: %v", err)
+		log.Fatalf("failed to connect pgxpool: %v", err)
+	}
+	defer pool.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatalf("postgres ping failed: %v", err)
 	}
 
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(30 * time.Minute)
+	// --- media repo ---
+	mediaRepo := infra.NewPostgresMediaRepo(pool)
 
-	if err := db.Ping(); err != nil {
-		log.Fatalf("db ping failed: %v", err)
-	}
+	// --- STT ---
+	stt := infra.NewYandexSTTService()
 
-	// --- services ---
-	authService := domain.NewAuthService(db, secret)
-	streamService := domain.NewStreamService(zl) // ← добавили логгер!
+	// --- media service ---
+	mediaService := domain.NewMediaService(mediaRepo, stt)
 
-	// --- handlers ---
-	authHandler := delivery.NewAuthHandler(authService, zl)
-	streamHandler := delivery.NewStreamHandler(zl, streamService)
+	// --- WebSocket hub ---
+	hub := ws.NewHub()
 
 	// --- router ---
 	r := chi.NewRouter()
-	delivery.RegisterRoutes(r, authHandler, streamHandler, authService)
+
+	// WebSocket endpoint
+	r.Get("/ws", ws.WSHandler(hub, mediaService))
+
+	// healthcheck
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	})
 
 	// --- server ---
 	addr := ":" + port

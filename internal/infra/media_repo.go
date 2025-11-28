@@ -32,11 +32,11 @@ func (r *PostgresMediaRepo) InsertMedia(ctx context.Context, media *models.Media
 
 func (r *PostgresMediaRepo) InsertChunk(ctx context.Context, chunk *models.MediaChunk) error {
 	query := `
-		INSERT INTO media_chunk (media_id, chunk_number, data)
+		INSERT INTO media_chunk (media_id, chunk_number, text)
 		VALUES ($1, $2, $3)
 		RETURNING id
 	`
-	row := r.pool.QueryRow(ctx, query, chunk.MediaID, chunk.ChunkNumber, chunk.Data)
+	row := r.pool.QueryRow(ctx, query, chunk.MediaID, chunk.ChunkNumber, chunk.Text)
 	if err := row.Scan(&chunk.ID); err != nil {
 		return fmt.Errorf("insert chunk: %w", err)
 	}
@@ -46,7 +46,7 @@ func (r *PostgresMediaRepo) InsertChunk(ctx context.Context, chunk *models.Media
 func (r *PostgresMediaRepo) UpdateChunkText(ctx context.Context, chunkID int, text string) error {
 	query := `
 		UPDATE media_chunk
-		SET text_content = $1
+		SET text = $1
 		WHERE id = $2
 	`
 	_, err := r.pool.Exec(ctx, query, text, chunkID)

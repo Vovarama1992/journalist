@@ -1,16 +1,15 @@
 package delivery
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/Vovarama1992/journalist/internal/domain"
 )
 
-// WSHandler запускает ProcessMedia на MediaService
 func WSHandler(hub *Hub, mediaService *domain.MediaService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// апгрейд соединения
 		conn, err := Upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			http.Error(w, "failed to upgrade", http.StatusBadRequest)
@@ -25,37 +24,56 @@ func WSHandler(hub *Hub, mediaService *domain.MediaService) http.HandlerFunc {
 		hub.Register(roomID, conn)
 		defer hub.Unregister(roomID)
 
-		// читаем первое сообщение — URL
+		//------------------------------------------------------
+		// получаем от клиента URL для обработки
+		//------------------------------------------------------
+
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("read url failed: %v", err)
 			return
 		}
 		url := string(msg)
-		log.Printf("received URL from client: %s", url)
 
-		// подтверждение старта обработки
-		ack := []byte("processing started")
-		if err := hub.SendToRoom(roomID, ack); err != nil {
-			log.Printf("send ack failed: %v", err)
-		}
+		_ = hub.SendToRoom(roomID, []byte("processing started"))
 
-		// запускаем ProcessMedia в отдельной горутине
+		//------------------------------------------------------
+		// слушаем события чанков → пушим в WebSocket
+		//------------------------------------------------------
+
+		go func() {
+			for event := range mediaService.Events() {
+				payload := []byte(
+					fmt.Sprintf(`{"mediaId": %d, "chunk": %d, "text": "%s"}`,
+						event.MediaID,
+						event.ChunkNumber,
+						event.Text,
+					),
+				)
+				hub.SendToRoom(roomID, payload)
+			}
+		}()
+
+		//------------------------------------------------------
+		// запускаем обработку медиа
+		//------------------------------------------------------
+
 		go func() {
 			_, err := mediaService.ProcessMedia(r.Context(), url, "audio")
 			if err != nil {
-				log.Printf("process media failed: %v", err)
+				log.Printf("process media error: %v", err)
 			}
-			// можно добавить отправку финального уведомления на фронт
-			done := []byte("processing finished")
-			hub.SendToRoom(roomID, done)
+			hub.SendToRoom(roomID, []byte("processing finished"))
 		}()
 
-		// оставляем соединение открытым
+		//------------------------------------------------------
+		// держим WebSocket открытым
+		//------------------------------------------------------
+
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
-				break
+				return
 			}
 		}
 	}

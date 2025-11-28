@@ -6,81 +6,148 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"time"
 
 	"github.com/Vovarama1992/journalist/internal/models"
 	"github.com/Vovarama1992/journalist/internal/ports"
 )
 
 type MediaService struct {
-	repo ports.MediaRepository
-	stt  ports.STTService
+	repo   ports.MediaRepository
+	stt    ports.STTService
+	events chan ports.ChunkEvent
 }
 
 func NewMediaService(repo ports.MediaRepository, stt ports.STTService) *MediaService {
 	return &MediaService{
-		repo: repo,
-		stt:  stt,
+		repo:   repo,
+		stt:    stt,
+		events: make(chan ports.ChunkEvent, 100),
 	}
 }
 
-// ProcessMedia: создаёт media, нарезает на чанки, сохраняет пустые чанки, отправляет в STT и обновляет текст
-func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType string) (*models.Media, error) {
-	media, err := s.repo.InsertMedia(ctx, &models.Media{
-		SourceURL: sourceURL,
-		Type:      mediaType,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create media: %w", err)
-	}
+func (s *MediaService) Events() <-chan ports.ChunkEvent {
+	return s.events
+}
 
+///////////////////////////////////////////////////////////////////////
+// 1) создать запись media
+///////////////////////////////////////////////////////////////////////
+
+func (s *MediaService) createMedia(ctx context.Context, src, typ string) (*models.Media, error) {
+	return s.repo.InsertMedia(ctx, &models.Media{
+		SourceURL: src,
+		Type:      typ,
+	})
+}
+
+///////////////////////////////////////////////////////////////////////
+// 2) запустить ffmpeg и получить поток PCM
+///////////////////////////////////////////////////////////////////////
+
+func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Reader, *exec.Cmd, error) {
 	cmd := exec.CommandContext(ctx,
 		"ffmpeg",
-		"-i", sourceURL,
-		"-f", "segment",
-		"-segment_time", "15",
-		"-c", "copy",
-		"-map", "0:a",
+		"-i", url,
+		"-vn",
+		"-ac", "1",
+		"-ar", "48000",
+		"-f", "s16le",
 		"pipe:1",
 	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("ffmpeg stdout pipe: %w", err)
+		return nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
-
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start ffmpeg: %w", err)
+		return nil, nil, fmt.Errorf("start ffmpeg: %w", err)
 	}
 
-	reader := bufio.NewReader(stdout)
+	return bufio.NewReader(stdout), cmd, nil
+}
+
+///////////////////////////////////////////////////////////////////////
+// 3) читать кусок данных из ffmpeg
+///////////////////////////////////////////////////////////////////////
+
+func (s *MediaService) readFromFFmpeg(reader *bufio.Reader, buf []byte) ([]byte, error) {
+	tmp := make([]byte, 256*1024)
+	n, err := reader.Read(tmp)
+	if n > 0 {
+		buf = append(buf, tmp[:n]...)
+	}
+	return buf, err
+}
+
+///////////////////////////////////////////////////////////////////////
+// 4) сохранить чанк в БД и отправить в STT
+///////////////////////////////////////////////////////////////////////
+
+func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chunkNum int, audio []byte) {
+	chunk := &models.MediaChunk{
+		MediaID:     mediaID,
+		ChunkNumber: chunkNum,
+		Text:        "",
+	}
+
+	_ = s.repo.InsertChunk(ctx, chunk)
+
+	go func(c *models.MediaChunk, data []byte) {
+		text, err := s.stt.Recognize(ctx, data)
+		if err != nil {
+			log.Printf("STT error: %v", err)
+			return
+		}
+
+		_ = s.repo.UpdateChunkText(ctx, c.ID, text)
+
+		s.events <- ports.ChunkEvent{
+			MediaID:     c.MediaID,
+			ChunkNumber: c.ChunkNumber,
+			Text:        text,
+		}
+	}(chunk, audio)
+}
+
+///////////////////////////////////////////////////////////////////////
+// 5) ProcessMedia — главный оркестратор
+///////////////////////////////////////////////////////////////////////
+
+func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType string) (*models.Media, error) {
+	media, err := s.createMedia(ctx, sourceURL, mediaType)
+	if err != nil {
+		return nil, err
+	}
+
+	reader, cmd, err := s.startFFmpeg(ctx, sourceURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf []byte
 	chunkNum := 0
 
-	for {
-		buf := make([]byte, 32*1024)
-		n, err := reader.Read(buf)
-		if n > 0 {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	// каждые 15 секунд — формируем чанк
+	go func() {
+		for range ticker.C {
+			if len(buf) == 0 {
+				continue
+			}
+
 			chunkNum++
-			chunk := &models.MediaChunk{
-				MediaID:     media.ID,
-				ChunkNumber: chunkNum,
-				Data:        buf[:n],
-			}
+			audioCopy := buf
+			buf = nil
 
-			if err := s.repo.InsertChunk(ctx, chunk); err != nil {
-				log.Printf("insert chunk failed: %v", err)
-			}
-
-			go func(c *models.MediaChunk) {
-				text, err := s.stt.Recognize(ctx, c.Data)
-				if err != nil {
-					log.Printf("STT error: %v", err)
-					return
-				}
-				if err := s.repo.UpdateChunkText(ctx, c.ID, text); err != nil {
-					log.Printf("update chunk text failed: %v", err)
-				}
-			}(chunk)
+			s.saveAndProcessChunk(ctx, media.ID, chunkNum, audioCopy)
 		}
+	}()
+
+	for {
+		buf, err = s.readFromFFmpeg(reader, buf)
 		if err != nil {
 			break
 		}
