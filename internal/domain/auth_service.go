@@ -4,21 +4,21 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 
 	"github.com/Vovarama1992/journalist/internal/ports"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type authService struct {
-	db     *sql.DB
+	pool   *pgxpool.Pool
 	secret string
 }
 
-func NewAuthService(db *sql.DB, secret string) ports.AuthService {
+func NewAuthService(pool *pgxpool.Pool, secret string) ports.AuthService {
 	return &authService{
-		db:     db,
+		pool:   pool,
 		secret: secret,
 	}
 }
@@ -26,7 +26,7 @@ func NewAuthService(db *sql.DB, secret string) ports.AuthService {
 func (s *authService) Login(ctx context.Context, password string) (string, error) {
 	var realPass string
 
-	err := s.db.QueryRowContext(ctx,
+	err := s.pool.QueryRow(ctx,
 		`SELECT password FROM journal_auth LIMIT 1`,
 	).Scan(&realPass)
 
@@ -38,9 +38,7 @@ func (s *authService) Login(ctx context.Context, password string) (string, error
 		return "", errors.New("invalid password")
 	}
 
-	// токен = HMAC(allowed)
 	token := s.sign("allowed")
-
 	return token, nil
 }
 

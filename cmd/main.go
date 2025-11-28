@@ -2,21 +2,32 @@ package main
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/Vovarama1992/go-utils/logger"
+	"github.com/Vovarama1992/journalist/internal/delivery"
 	ws "github.com/Vovarama1992/journalist/internal/delivery/ws"
 	"github.com/Vovarama1992/journalist/internal/domain"
 	"github.com/Vovarama1992/journalist/internal/infra"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 )
 
 func main() {
 
-	// --- env ---
+	// ----------------------------------------
+	// LOGGER
+	// ----------------------------------------
+	zcore, _ := zap.NewProduction()
+	zl := logger.NewZapLogger(zcore.Sugar())
+
+	// ----------------------------------------
+	// ENV
+	// ----------------------------------------
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -24,39 +35,71 @@ func main() {
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		log.Fatal("DATABASE_URL is not set")
+		panic("DATABASE_URL is not set")
 	}
 
-	// --- postgres (pgxpool) ---
-	pool, err := pgxpool.New(context.Background(), dsn)
+	secret := os.Getenv("AUTH_SECRET")
+	if secret == "" {
+		panic("AUTH_SECRET is not set")
+	}
+
+	// ----------------------------------------
+	// POSTGRES (pgxpool)
+	// ----------------------------------------
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		log.Fatalf("failed to connect pgxpool: %v", err)
+		panic("cannot connect pgxpool: " + err.Error())
 	}
 	defer pool.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctxPing, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := pool.Ping(ctx); err != nil {
-		log.Fatalf("postgres ping failed: %v", err)
+	if err := pool.Ping(ctxPing); err != nil {
+		panic("postgres ping failed: " + err.Error())
 	}
 
-	// --- media repo ---
+	// ----------------------------------------
+	// SERVICES
+	// ----------------------------------------
+	authService := domain.NewAuthService(pool, secret)
+
 	mediaRepo := infra.NewPostgresMediaRepo(pool)
-
-	// --- STT ---
 	stt := infra.NewYandexSTTService()
-
-	// --- media service ---
 	mediaService := domain.NewMediaService(mediaRepo, stt)
 
-	// --- WebSocket hub ---
+	streamService := domain.NewStreamService(zl)
+
+	// ----------------------------------------
+	// HANDLERS
+	// ----------------------------------------
+	authHandler := delivery.NewAuthHandler(authService, zl)
+	streamHandler := delivery.NewStreamHandler(zl, streamService)
+
+	// ----------------------------------------
+	// WS HUB
+	// ----------------------------------------
 	hub := ws.NewHub()
 
-	// --- router ---
+	// ----------------------------------------
+	// ROUTER
+	// ----------------------------------------
 	r := chi.NewRouter()
 
-	// WebSocket endpoint
+	// CORS
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type", "X-Auth"},
+		AllowCredentials: true,
+	}))
+
+	// REST routes
+	delivery.RegisterRoutes(r, authHandler, streamHandler, authService)
+
+	// WS route
 	r.Get("/ws", ws.WSHandler(hub, mediaService))
 
 	// healthcheck
@@ -64,11 +107,20 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	// --- server ---
-	addr := ":" + port
-	log.Println("listening at", addr)
+	// ----------------------------------------
+	// START SERVER
+	// ----------------------------------------
+	zl.Log(logger.LogEntry{
+		Level:   "info",
+		Message: "server started",
+		Fields:  map[string]any{"port": port},
+	})
 
-	if err := http.ListenAndServe(addr, r); err != nil {
-		log.Fatal(err)
+	if err := http.ListenAndServe(":"+port, r); err != nil {
+		zl.Log(logger.LogEntry{
+			Level:   "error",
+			Message: "server crashed",
+			Error:   err,
+		})
 	}
 }
