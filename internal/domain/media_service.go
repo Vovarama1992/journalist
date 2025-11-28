@@ -43,7 +43,7 @@ func (s *MediaService) createMedia(ctx context.Context, src, typ string) (*model
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 2) запуск ffmpeg
+// 2) запуск ffmpeg (OPUS вместо PCM)
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Reader, *exec.Cmd, error) {
@@ -54,8 +54,10 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 		"-i", url,
 		"-vn",
 		"-ac", "1",
-		"-ar", "48000",
-		"-f", "s16le",
+		"-ar", "16000",
+		"-c:a", "libopus",
+		"-b:a", "48k",
+		"-f", "ogg",
 		"pipe:1",
 	)
 
