@@ -32,7 +32,7 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 1) запись media
+// 1) create media
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) createMedia(ctx context.Context, src, typ string) (*models.Media, error) {
@@ -43,7 +43,7 @@ func (s *MediaService) createMedia(ctx context.Context, src, typ string) (*model
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 2) запуск ffmpeg (OPUS вместо PCM)
+// 2) start ffmpeg
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Reader, *exec.Cmd, error) {
@@ -54,10 +54,8 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 		"-i", url,
 		"-vn",
 		"-ac", "1",
-		"-ar", "16000",
-		"-c:a", "libopus",
-		"-b:a", "48k",
-		"-f", "ogg",
+		"-ar", "48000",
+		"-f", "s16le",
 		"pipe:1",
 	)
 
@@ -73,20 +71,20 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 3) чтение кусков из ffmpeg
+// 3) read chunk from ffmpeg
 ///////////////////////////////////////////////////////////////////////
 
-func (s *MediaService) readFromFFmpeg(reader *bufio.Reader, buf []byte) ([]byte, error) {
+func (s *MediaService) readFromFFmpeg(reader *bufio.Reader) ([]byte, error) {
 	tmp := make([]byte, 256*1024)
 	n, err := reader.Read(tmp)
 	if n > 0 {
-		buf = append(buf, tmp[:n]...)
+		return tmp[:n], nil
 	}
-	return buf, err
+	return nil, err
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 4) Save + STT + emit event
+// 4) save chunk + STT
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chunkNum int, audio []byte) {
@@ -120,57 +118,69 @@ func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chu
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 5) ProcessMedia — оркестратор + YouTube resolver
+// 5) ProcessMedia — FINAL FIXED VERSION
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType string) (*models.Media, error) {
 	log.Printf("[media] start: %.60s…", sourceURL)
 
-	// — YouTube
+	// resolve youtube
 	if strings.Contains(sourceURL, "youtube") || strings.Contains(sourceURL, "youtu.be") {
 		log.Printf("[media] youtube detected, resolving…")
+
 		u, err := ResolveYouTube(sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve youtube failed: %w", err)
 		}
+
 		log.Printf("[media] resolved: %.60s…", u)
 		sourceURL = u
 	}
 
-	// — запись media
+	// create media row
 	media, err := s.createMedia(ctx, sourceURL, mediaType)
 	if err != nil {
 		return nil, err
 	}
 
-	// — запуск ffmpeg
+	// ffmpeg pipe
 	reader, cmd, err := s.startFFmpeg(ctx, sourceURL)
 	if err != nil {
 		return nil, err
 	}
 
+	// accumulator (ONLY for current chunk)
 	var buf []byte
 	chunkNum := 0
 
-	ticker := time.NewTicker(6 * time.Second)
+	// chunk timing: ~6 seconds
+	const chunkInterval = 6 * time.Second
+	ticker := time.NewTicker(chunkInterval)
 	defer ticker.Stop()
 
-	// таймер чанков
 	go func() {
 		for range ticker.C {
 			if len(buf) == 0 {
 				continue
 			}
+
+			// FINAL COPY (no shared slice!)
+			audioCopy := make([]byte, len(buf))
+			copy(audioCopy, buf)
+
+			buf = buf[:0] // zero but keep capacity
+
 			chunkNum++
-			audioCopy := buf
-			buf = nil
 			s.saveAndProcessChunk(ctx, media.ID, chunkNum, audioCopy)
 		}
 	}()
 
-	// чтение аудиопотока
+	// read ffmpeg stream
 	for {
-		buf, err = s.readFromFFmpeg(reader, buf)
+		frame, err := s.readFromFFmpeg(reader)
+		if frame != nil && len(frame) > 0 {
+			buf = append(buf, frame...)
+		}
 		if err != nil {
 			log.Printf("[media] ffmpeg read stop: %v", err)
 			break
