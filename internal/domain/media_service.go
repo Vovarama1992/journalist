@@ -32,7 +32,7 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 1) создать запись media
+// 1) запись media
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) createMedia(ctx context.Context, src, typ string) (*models.Media, error) {
@@ -43,10 +43,12 @@ func (s *MediaService) createMedia(ctx context.Context, src, typ string) (*model
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 2) запустить ffmpeg и получить поток PCM
+// 2) запуск ffmpeg
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Reader, *exec.Cmd, error) {
+	log.Printf("[media] ffmpeg start: %.60s…", url)
+
 	cmd := exec.CommandContext(ctx,
 		"ffmpeg",
 		"-i", url,
@@ -69,7 +71,7 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 3) читать кусок данных из ffmpeg
+// 3) чтение кусков из ffmpeg
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) readFromFFmpeg(reader *bufio.Reader, buf []byte) ([]byte, error) {
@@ -82,10 +84,12 @@ func (s *MediaService) readFromFFmpeg(reader *bufio.Reader, buf []byte) ([]byte,
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 4) сохранить чанк в БД и отправить в STT
+// 4) Save + STT + emit event
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chunkNum int, audio []byte) {
+	log.Printf("[media] chunk %d save (%d bytes)", chunkNum, len(audio))
+
 	chunk := &models.MediaChunk{
 		MediaID:     mediaID,
 		ChunkNumber: chunkNum,
@@ -97,7 +101,7 @@ func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chu
 	go func(c *models.MediaChunk, data []byte) {
 		text, err := s.stt.Recognize(ctx, data)
 		if err != nil {
-			log.Printf("STT error: %v", err)
+			log.Printf("[media] STT error chunk %d: %v", c.ChunkNumber, err)
 			return
 		}
 
@@ -108,37 +112,36 @@ func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chu
 			ChunkNumber: c.ChunkNumber,
 			Text:        text,
 		}
+
+		log.Printf("[media] chunk %d text ready", c.ChunkNumber)
 	}(chunk, audio)
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 5) ProcessMedia — главный оркестратор + RESOLVE YOUTUBE
+// 5) ProcessMedia — оркестратор + YouTube resolver
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType string) (*models.Media, error) {
+	log.Printf("[media] start: %.60s…", sourceURL)
 
-	// -------------------------------------------------
-	// ВСТАВКА: РЕЗОЛВИНГ YOUTUBE (СТРОГО КАК ТЫ ХОТЕЛ)
-	// -------------------------------------------------
-	if strings.Contains(sourceURL, "youtube.com") || strings.Contains(sourceURL, "youtu.be") {
+	// — YouTube
+	if strings.Contains(sourceURL, "youtube") || strings.Contains(sourceURL, "youtu.be") {
+		log.Printf("[media] youtube detected, resolving…")
 		u, err := ResolveYouTube(sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve youtube failed: %w", err)
 		}
+		log.Printf("[media] resolved: %.60s…", u)
 		sourceURL = u
 	}
 
-	// -------------------------------------------------
-	// 1) создаём запись media
-	// -------------------------------------------------
+	// — запись media
 	media, err := s.createMedia(ctx, sourceURL, mediaType)
 	if err != nil {
 		return nil, err
 	}
 
-	// -------------------------------------------------
-	// 2) запускаем ffmpeg уже по RESOLVED URL
-	// -------------------------------------------------
+	// — запуск ffmpeg
 	reader, cmd, err := s.startFFmpeg(ctx, sourceURL)
 	if err != nil {
 		return nil, err
@@ -150,28 +153,29 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType st
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	// каждые 15 секунд — формируем чанк
+	// таймер чанков
 	go func() {
 		for range ticker.C {
 			if len(buf) == 0 {
 				continue
 			}
-
 			chunkNum++
 			audioCopy := buf
 			buf = nil
-
 			s.saveAndProcessChunk(ctx, media.ID, chunkNum, audioCopy)
 		}
 	}()
 
+	// чтение аудиопотока
 	for {
 		buf, err = s.readFromFFmpeg(reader, buf)
 		if err != nil {
+			log.Printf("[media] ffmpeg read stop: %v", err)
 			break
 		}
 	}
 
 	cmd.Wait()
+	log.Printf("[media] finished mediaID=%d", media.ID)
 	return media, nil
 }
