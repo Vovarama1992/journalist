@@ -150,7 +150,7 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType st
 	var buf []byte
 	chunkNum := 0
 
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(6 * time.Second)
 	defer ticker.Stop()
 
 	// таймер чанков
