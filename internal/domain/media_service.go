@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/Vovarama1992/journalist/internal/models"
@@ -111,15 +112,33 @@ func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chu
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 5) ProcessMedia — главный оркестратор
+// 5) ProcessMedia — главный оркестратор + RESOLVE YOUTUBE
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType string) (*models.Media, error) {
+
+	// -------------------------------------------------
+	// ВСТАВКА: РЕЗОЛВИНГ YOUTUBE (СТРОГО КАК ТЫ ХОТЕЛ)
+	// -------------------------------------------------
+	if strings.Contains(sourceURL, "youtube.com") || strings.Contains(sourceURL, "youtu.be") {
+		u, err := ResolveYouTube(sourceURL)
+		if err != nil {
+			return nil, fmt.Errorf("resolve youtube failed: %w", err)
+		}
+		sourceURL = u
+	}
+
+	// -------------------------------------------------
+	// 1) создаём запись media
+	// -------------------------------------------------
 	media, err := s.createMedia(ctx, sourceURL, mediaType)
 	if err != nil {
 		return nil, err
 	}
 
+	// -------------------------------------------------
+	// 2) запускаем ffmpeg уже по RESOLVED URL
+	// -------------------------------------------------
 	reader, cmd, err := s.startFFmpeg(ctx, sourceURL)
 	if err != nil {
 		return nil, err
