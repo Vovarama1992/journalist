@@ -12,31 +12,50 @@ import (
 //
 //	yt-dlp -g <url>
 func ResolveYouTube(src string) (string, error) {
-	const ytPath = "/usr/local/bin/yt-dlp"
+	log.Printf("[PTRP] resolve youtube: %s", src)
 
-	// ЛОГИРУЕМ команду, чтобы потом видеть 1-в-1
-	log.Printf("[media] yt-dlp cmd: %s -g %s", ytPath, src)
+	try := func(desc string, args ...string) (string, bool) {
+		log.Printf("[PTRP] yt-dlp try: %s → yt-dlp %v", desc, args)
 
-	cmd := exec.Command(ytPath, "-g", src)
-	out, err := cmd.CombinedOutput()
-	outStr := strings.TrimSpace(string(out))
+		cmd := exec.Command("yt-dlp", args...)
+		out, err := cmd.CombinedOutput()
 
-	if err != nil {
-		// Отдаём ВСЁ, чтобы по логам дальше не гадать
-		return "", fmt.Errorf("yt-dlp -g failed: %w, output=%s", err, outStr)
+		log.Printf("[PTRP] yt-dlp out (%s): %s", desc, strings.TrimSpace(string(out)))
+		if err != nil {
+			log.Printf("[PTRP] yt-dlp err (%s): %v", desc, err)
+			return "", false
+		}
+
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) == 0 {
+			log.Printf("[PTRP] yt-dlp (%s): no lines", desc)
+			return "", false
+		}
+
+		last := lines[len(lines)-1]
+		if !strings.HasPrefix(last, "http") {
+			log.Printf("[PTRP] yt-dlp (%s): not url: %s", desc, last)
+			return "", false
+		}
+
+		log.Printf("[PTRP] RESOLVED (%s): %s", desc, last)
+		return last, true
 	}
 
-	if outStr == "" {
-		return "", fmt.Errorf("yt-dlp -g returned empty output")
+	// 1) основной путь — чистый аудио стрим
+	if url, ok := try("bestaudio-m4a", "-f", "bestaudio[ext=m4a]/bestaudio", "--no-playlist", "-g", src); ok {
+		return url, nil
 	}
 
-	lines := strings.Split(outStr, "\n")
-	last := strings.TrimSpace(lines[len(lines)-1])
-
-	if !strings.HasPrefix(last, "http") {
-		return "", fmt.Errorf("yt-dlp -g returned non-http line: %q (full=%q)", last, outStr)
+	// 2) fallback — просто bestaudio
+	if url, ok := try("bestaudio", "-f", "bestaudio", "--no-playlist", "-g", src); ok {
+		return url, nil
 	}
 
-	log.Printf("[media] ResolveYouTube OK: %.80s…", last)
-	return last, nil
+	// 3) последний fallback — как у тебя было (может дать m3u8)
+	if url, ok := try("raw", "-g", src); ok {
+		return url, nil
+	}
+
+	return "", fmt.Errorf("yt-dlp: cannot resolve audio URL for %s", src)
 }
