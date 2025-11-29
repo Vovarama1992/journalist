@@ -90,7 +90,14 @@ func (s *MediaService) readFromFFmpeg(reader *bufio.Reader) ([]byte, error) {
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chunkNum int, audio []byte, roomID string) {
-	log.Printf("[media] chunk %d save (%d bytes)", chunkNum, len(audio))
+	log.Printf("[media] chunk %d raw-bytes=%d", chunkNum, len(audio))
+
+	// Показать первые ~40 байт, чтобы понять есть ли звук / ogg header
+	preview := 40
+	if len(audio) < preview {
+		preview = len(audio)
+	}
+	log.Printf("[media] chunk %d preview=%v", chunkNum, audio[:preview])
 
 	chunk := &models.MediaChunk{
 		MediaID:     mediaID,
@@ -103,21 +110,23 @@ func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chu
 	go func(c *models.MediaChunk, data []byte) {
 		text, err := s.stt.Recognize(ctx, data)
 		if err != nil {
-			log.Printf("[media] STT error chunk %d: %v", c.ChunkNumber, err)
+			log.Printf("[media] STT error chunk=%d media=%d err=%v", c.ChunkNumber, c.MediaID, err)
 			return
 		}
 
+		log.Printf("[media] STT text chunk=%d len=%d text=%.60s...", c.ChunkNumber, len(text), text)
+
 		_ = s.repo.UpdateChunkText(ctx, c.ID, text)
 
-		// ВАЖНО — теперь чанк знает roomID
 		s.events <- ports.ChunkEvent{
-			RoomID:      roomID,
 			MediaID:     c.MediaID,
 			ChunkNumber: c.ChunkNumber,
 			Text:        text,
+			RoomID:      roomID,
 		}
 
-		log.Printf("[media] chunk %d text ready", c.ChunkNumber)
+		log.Printf("[SEND] room=%s chunk=%d media=%d text=%s",
+			roomID, c.ChunkNumber, c.MediaID, text)
 	}(chunk, audio)
 }
 
