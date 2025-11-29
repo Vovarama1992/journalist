@@ -78,10 +78,11 @@ func main() {
 					ev.Text,
 				),
 			)
-			hub.Broadcast(payload)
+
+			// ключевой момент — отправляем строго в ev.RoomID
+			hub.SendToRoom(ev.RoomID, payload)
 		}
 	}()
-
 	// HANDLERS
 	authHandler := delivery.NewAuthHandler(authService, zl)
 	streamHandler := delivery.NewStreamHandler(zl, streamService)

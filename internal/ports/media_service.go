@@ -7,14 +7,13 @@ import (
 )
 
 type ChunkEvent struct {
+	RoomID      string
 	MediaID     int
 	ChunkNumber int
 	Text        string
 }
 
 type MediaService interface {
-	ProcessMedia(ctx context.Context, sourceURL, mediaType string) (*models.Media, error)
-
-	// Канал, в который сервис пушит готовые текстовые чанки
+	ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error)
 	Events() <-chan ChunkEvent
 }

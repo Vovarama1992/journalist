@@ -86,10 +86,10 @@ func (s *MediaService) readFromFFmpeg(reader *bufio.Reader) ([]byte, error) {
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 4) save chunk + STT
+// 4) save chunk + STT (+ roomID)
 ///////////////////////////////////////////////////////////////////////
 
-func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chunkNum int, audio []byte) {
+func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chunkNum int, audio []byte, roomID string) {
 	log.Printf("[media] chunk %d save (%d bytes)", chunkNum, len(audio))
 
 	chunk := &models.MediaChunk{
@@ -109,7 +109,9 @@ func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chu
 
 		_ = s.repo.UpdateChunkText(ctx, c.ID, text)
 
+		// ВАЖНО — теперь чанк знает roomID
 		s.events <- ports.ChunkEvent{
+			RoomID:      roomID,
 			MediaID:     c.MediaID,
 			ChunkNumber: c.ChunkNumber,
 			Text:        text,
@@ -120,64 +122,55 @@ func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chu
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 5) ProcessMedia — FINAL FIXED VERSION
+// 5) ProcessMedia — принимает roomID
 ///////////////////////////////////////////////////////////////////////
 
-func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType string) (*models.Media, error) {
+func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error) {
 	log.Printf("[media] start: %.60s…", sourceURL)
 
 	// resolve youtube
 	if strings.Contains(sourceURL, "youtube") || strings.Contains(sourceURL, "youtu.be") {
-		log.Printf("[media] youtube detected, resolving…")
-
 		u, err := ResolveYouTube(sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve youtube failed: %w", err)
 		}
-
-		log.Printf("[media] resolved: %.60s…", u)
 		sourceURL = u
 	}
 
-	// create media row
 	media, err := s.createMedia(ctx, sourceURL, mediaType)
 	if err != nil {
 		return nil, err
 	}
 
-	// ffmpeg pipe
 	reader, cmd, err := s.startFFmpeg(ctx, sourceURL)
 	if err != nil {
 		return nil, err
 	}
 
-	// accumulator (ONLY for current chunk)
 	var buf []byte
 	chunkNum := 0
 
-	// chunk timing: ~6 seconds
 	const chunkInterval = 6 * time.Second
 	ticker := time.NewTicker(chunkInterval)
 	defer ticker.Stop()
 
+	// таймер → каждую порцию отправляем в saveAndProcessChunk
 	go func() {
 		for range ticker.C {
 			if len(buf) == 0 {
 				continue
 			}
 
-			// FINAL COPY (no shared slice!)
 			audioCopy := make([]byte, len(buf))
 			copy(audioCopy, buf)
-
-			buf = buf[:0] // zero but keep capacity
+			buf = buf[:0]
 
 			chunkNum++
-			s.saveAndProcessChunk(ctx, media.ID, chunkNum, audioCopy)
+			s.saveAndProcessChunk(ctx, media.ID, chunkNum, audioCopy, roomID)
 		}
 	}()
 
-	// read ffmpeg stream
+	// читаем ffmpeg поток
 	for {
 		frame, err := s.readFromFFmpeg(reader)
 		if frame != nil && len(frame) > 0 {

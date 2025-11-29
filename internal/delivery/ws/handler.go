@@ -40,11 +40,10 @@ func WSHandler(hub *Hub, mediaService *domain.MediaService) http.HandlerFunc {
 		// запускаем процесс медиа
 		// ---------------------------------------------------
 		go func() {
-			_, err := mediaService.ProcessMedia(r.Context(), url, "audio")
+			_, err := mediaService.ProcessMedia(r.Context(), url, "audio", roomID)
 			if err != nil {
 				log.Printf("process media error: %v", err)
 			}
-
 			hub.SendToRoom(roomID, []byte(`{"status":"processing_finished"}`))
 		}()
 
