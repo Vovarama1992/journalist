@@ -37,6 +37,9 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 //////////////////////////////////////////////////////////////
 
 func (s *MediaService) capture5secWav(url string) ([]byte, error) {
+
+	log.Printf("[DEBUG] capture5secWav: URL = %s", url) // <<< ЭТО НАМ НУЖНО
+
 	cmd := exec.Command(
 		"ffmpeg",
 		"-i", url,
@@ -93,9 +96,11 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		if err != nil {
 			return nil, fmt.Errorf("resolve youtube failed: %w", err)
 		}
-		log.Printf("[media] resolved: %.60s…", u)
+		log.Printf("[media] resolved RAW: %s", u) // <<< СМОТРИМ ЧТО ВЕРНУЛ yt-dlp
 		sourceURL = u
 	}
+
+	log.Printf("[DEBUG] FINAL RESOLVED URL = %s", sourceURL) // <<< ЭТО НАМ НУЖНО
 
 	// --- создаём media запись ---
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
