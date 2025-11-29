@@ -36,17 +36,15 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Reader, *exec.Cmd, error) {
-	log.Printf("[media] ffmpeg start: %.60s…", url)
+	log.Printf("[media] ffmpeg start (PCM): %.60s…", url)
 
 	cmd := exec.CommandContext(ctx,
 		"ffmpeg",
 		"-i", url,
 		"-vn",
-		"-ac", "1",
-		"-ar", "16000",
-		"-c:a", "libopus",
-		"-b:a", "24k",
-		"-f", "ogg",
+		"-ac", "1", // mono
+		"-ar", "16000", // 16 kHz — идеально для STT
+		"-f", "s16le", // RAW PCM (режь где хочешь)
 		"pipe:1",
 	)
 
@@ -54,6 +52,7 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 	if err != nil {
 		return nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
+
 	if err := cmd.Start(); err != nil {
 		return nil, nil, fmt.Errorf("start ffmpeg: %w", err)
 	}
