@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -37,13 +36,12 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 //////////////////////////////////////////////////////////////
 
 func (s *MediaService) capture5secWav(url string) ([]byte, error) {
-
-	log.Printf("[DEBUG] capture5secWav: URL = %s", url) // <<< ЭТО НАМ НУЖНО
+	log.Printf("[cap] start capture5secWav url=%.80s", url)
 
 	cmd := exec.Command(
 		"ffmpeg",
-		"-user_agent", "Mozilla/5.0",
-		"-headers", "Accept: */*",
+		"-re",
+		"-seekable", "0",
 		"-i", url,
 		"-vn",
 		"-ac", "1",
@@ -57,24 +55,25 @@ func (s *MediaService) capture5secWav(url string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
-
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	data, err := io.ReadAll(bufio.NewReader(stdout))
-	if err != nil {
-		return nil, fmt.Errorf("read wav: %w", err)
-	}
-
-	cmd.Wait()
-
+	data, readErr := io.ReadAll(stdout)
 	errLog, _ := io.ReadAll(stderr)
+
+	_ = cmd.Wait()
+
 	if len(errLog) > 0 {
-		log.Printf("[media] ffmpeg stderr: %s", string(errLog))
+		log.Printf("[cap] ffmpeg stderr: %s", errLog)
 	}
+	if readErr != nil {
+		return nil, fmt.Errorf("read stdout: %w", readErr)
+	}
+
+	log.Printf("[cap] wav bytes=%d", len(data))
 
 	if len(data) < 8000 {
 		return nil, fmt.Errorf("wav too small: %d", len(data))
