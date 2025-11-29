@@ -36,12 +36,13 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 //////////////////////////////////////////////////////////////
 
 func (s *MediaService) capture5secWav(url string) ([]byte, error) {
-	log.Printf("[cap] start capture5secWav url=%.80s", url)
+	log.Printf("[cap] url=%.80s", url)
 
 	cmd := exec.Command(
 		"ffmpeg",
 		"-re",
-		"-seekable", "0",
+		"-rw_timeout", "15000000", // 15ms → нет зависаний
+		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
 		"-i", url,
 		"-vn",
 		"-ac", "1",
@@ -53,28 +54,24 @@ func (s *MediaService) capture5secWav(url string) ([]byte, error) {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("stdout pipe: %w", err)
+		return nil, err
 	}
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("ffmpeg start: %w", err)
+		return nil, err
 	}
 
-	data, readErr := io.ReadAll(stdout)
+	data, rErr := io.ReadAll(stdout)
 	errLog, _ := io.ReadAll(stderr)
-
 	_ = cmd.Wait()
 
 	if len(errLog) > 0 {
-		log.Printf("[cap] ffmpeg stderr: %s", errLog)
+		log.Printf("[cap] ffmpeg: %s", errLog)
 	}
-	if readErr != nil {
-		return nil, fmt.Errorf("read stdout: %w", readErr)
+	if rErr != nil {
+		return nil, rErr
 	}
-
-	log.Printf("[cap] wav bytes=%d", len(data))
-
 	if len(data) < 8000 {
 		return nil, fmt.Errorf("wav too small: %d", len(data))
 	}
