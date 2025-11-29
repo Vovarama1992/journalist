@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -80,6 +81,13 @@ func main() {
 			)
 
 			// ключевой момент — отправляем строго в ev.RoomID
+			log.Printf("[SEND] room=%s chunk=%d media=%d text=%.30s",
+				ev.RoomID,
+				ev.ChunkNumber,
+				ev.MediaID,
+				ev.Text,
+			)
+
 			hub.SendToRoom(ev.RoomID, payload)
 		}
 	}()
