@@ -16,9 +16,9 @@ type YandexSTTService struct {
 }
 
 func NewYandexSTTService() ports.STTService {
-	key := os.Getenv("YANDEX_API_KEY")
+	key := os.Getenv("YANDEX_SPEECHKIT_API_KEY")
 	if key == "" {
-		panic("YANDEX_API_KEY not set")
+		panic("YANDEX_SPEECHKIT_API_KEY not set")
 	}
 	return &YandexSTTService{apiKey: key}
 }
