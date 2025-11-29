@@ -77,55 +77,80 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) readFromFFmpeg(reader *bufio.Reader) ([]byte, error) {
-	tmp := make([]byte, 256*1024)
-	n, err := reader.Read(tmp)
-	if n > 0 {
-		return tmp[:n], nil
+	// читаем до 128 KB за раз
+	buf := make([]byte, 128*1024)
+
+	n, err := reader.Read(buf)
+	if n == 0 {
+		return nil, err
 	}
-	return nil, err
+
+	// если ffmpeg дал слишком маленький кусок — пропускаем
+	if n < 4*1024 {
+		log.Printf("[media] ffmpeg tiny-frame=%d bytes (skip)", n)
+		return nil, nil
+	}
+
+	return buf[:n], err
 }
 
 ///////////////////////////////////////////////////////////////////////
 // 4) save chunk + STT (+ roomID)
 ///////////////////////////////////////////////////////////////////////
 
-func (s *MediaService) saveAndProcessChunk(ctx context.Context, mediaID int, chunkNum int, audio []byte, roomID string) {
-	log.Printf("[media] chunk %d raw-bytes=%d", chunkNum, len(audio))
+func (s *MediaService) saveAndProcessChunk(
+	ctx context.Context,
+	mediaID int,
+	chunkNum int,
+	audio []byte,
+	roomID string,
+) {
+	rawSize := len(audio)
+	log.Printf("[media] chunk %d raw-bytes=%d", chunkNum, rawSize)
 
-	// Показать первые ~40 байт, чтобы понять есть ли звук / ogg header
-	preview := 40
-	if len(audio) < preview {
-		preview = len(audio)
+	// показать первые ~40 байт
+	prev := 40
+	if rawSize < prev {
+		prev = rawSize
 	}
-	log.Printf("[media] chunk %d preview=%v", chunkNum, audio[:preview])
+	log.Printf("[media] chunk %d preview=%v", chunkNum, audio[:prev])
 
+	// сначала пишем в БД с пустым текстом
 	chunk := &models.MediaChunk{
 		MediaID:     mediaID,
 		ChunkNumber: chunkNum,
 		Text:        "",
 	}
-
 	_ = s.repo.InsertChunk(ctx, chunk)
 
+	// отдельная горутина → STT
 	go func(c *models.MediaChunk, data []byte) {
 		text, err := s.stt.Recognize(ctx, data)
 		if err != nil {
-			log.Printf("[media] STT error chunk=%d media=%d err=%v", c.ChunkNumber, c.MediaID, err)
+			log.Printf("[media] STT error chunk %d: %v", c.ChunkNumber, err)
 			return
 		}
 
-		log.Printf("[media] STT text chunk=%d len=%d text=%.60s...", c.ChunkNumber, len(text), text)
+		log.Printf("[media] STT text chunk=%d len=%d text=%.40s...", c.ChunkNumber, len(text), text)
 
+		// если пусто — просто не шлём в WebSocket
+		if strings.TrimSpace(text) == "" {
+			log.Printf("[media] skip empty text chunk=%d", c.ChunkNumber)
+			return
+		}
+
+		// обновляем текст в БД
 		_ = s.repo.UpdateChunkText(ctx, c.ID, text)
 
+		// пушим наружу
 		s.events <- ports.ChunkEvent{
+			RoomID:      roomID,
 			MediaID:     c.MediaID,
 			ChunkNumber: c.ChunkNumber,
 			Text:        text,
-			RoomID:      roomID,
 		}
 
-		log.Printf("[SEND] room=%s chunk=%d media=%d text=%s",
+		log.Printf("[SEND] room=%s chunk=%d media=%d text=%.40s...",
 			roomID, c.ChunkNumber, c.MediaID, text)
 	}(chunk, audio)
 }
@@ -139,39 +164,56 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 
 	// resolve youtube
 	if strings.Contains(sourceURL, "youtube") || strings.Contains(sourceURL, "youtu.be") {
+		log.Printf("[media] youtube detected, resolving…")
+
 		u, err := ResolveYouTube(sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve youtube failed: %w", err)
 		}
+
+		log.Printf("[media] resolved: %.60s…", u)
 		sourceURL = u
 	}
 
-	media, err := s.createMedia(ctx, sourceURL, mediaType)
+	// create media row
+	media, err := s.repo.InsertMedia(ctx, &models.Media{
+		SourceURL: sourceURL,
+		Type:      mediaType,
+	})
 	if err != nil {
 		return nil, err
 	}
 
+	// ffmpeg pipe
 	reader, cmd, err := s.startFFmpeg(ctx, sourceURL)
 	if err != nil {
 		return nil, err
 	}
 
+	// accumulator
 	var buf []byte
 	chunkNum := 0
 
-	const chunkInterval = 6 * time.Second
-	ticker := time.NewTicker(chunkInterval)
+	// желаемый минимальный размер чанка — 120 KB
+	const minChunkSize = 120 * 1024
+
+	// тикер 6 сек
+	ticker := time.NewTicker(6 * time.Second)
 	defer ticker.Stop()
 
-	// таймер → каждую порцию отправляем в saveAndProcessChunk
 	go func() {
 		for range ticker.C {
-			if len(buf) == 0 {
+			if len(buf) < minChunkSize {
+				// слишком маленький чанк — ждём наполнение
+				log.Printf("[media] skip: chunk too small (%d bytes), waiting…", len(buf))
 				continue
 			}
 
+			// копия буфера
 			audioCopy := make([]byte, len(buf))
 			copy(audioCopy, buf)
+
+			// сбрасываем буфер
 			buf = buf[:0]
 
 			chunkNum++
@@ -185,6 +227,7 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		if frame != nil && len(frame) > 0 {
 			buf = append(buf, frame...)
 		}
+
 		if err != nil {
 			log.Printf("[media] ffmpeg read stop: %v", err)
 			break
