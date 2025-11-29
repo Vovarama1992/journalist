@@ -74,17 +74,6 @@ func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.Re
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error) {
 	log.Printf("[media] start PTRP: %.60s…", sourceURL)
 
-	// youtube → прямой аудио URL
-	if strings.Contains(sourceURL, "youtube") || strings.Contains(sourceURL, "youtu.be") {
-		log.Printf("[media] youtube detected, resolving…")
-		u, err := ResolveYouTube(sourceURL)
-		if err != nil {
-			return nil, fmt.Errorf("resolve youtube failed: %w", err)
-		}
-		log.Printf("[media] resolved URL: %s", u)
-		sourceURL = u
-	}
-
 	// создаём запись media
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
 		SourceURL: sourceURL,
@@ -94,7 +83,7 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		return nil, err
 	}
 
-	// запускаем один ffmpeg-поток
+	// единственный ffmpeg-поток (универсальный)
 	stream, err := s.continuousCapture(ctx, sourceURL)
 	if err != nil {
 		return nil, fmt.Errorf("continuousCapture: %w", err)
@@ -120,7 +109,6 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 					log.Printf("[media] readFull err: %v", err)
 					return
 				}
-
 				if n < chunkBytes {
 					log.Printf("[media] short read %d bytes", n)
 					continue
@@ -141,7 +129,7 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 					continue
 				}
 
-				// в БД
+				// сохраняем в БД
 				_ = s.repo.InsertChunk(ctx, &models.MediaChunk{
 					MediaID:     media.ID,
 					ChunkNumber: chunkNum,
@@ -150,7 +138,7 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 
 				log.Printf("[media] SEND chunk=%d media=%d: %.40s", chunkNum, media.ID, txt)
 
-				// в WS
+				// отправляем в WS
 				s.events <- ports.ChunkEvent{
 					MediaID:     media.ID,
 					ChunkNumber: chunkNum,
