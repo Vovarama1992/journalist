@@ -12,26 +12,56 @@ import (
 //
 //	yt-dlp -g <url>
 func ResolveYouTube(src string) (string, error) {
-	const yt = "/usr/local/bin/yt-dlp"
+	const ytPath = "/usr/local/bin/yt-dlp"
 
-	cmd := exec.Command(yt, "-f", "140", "--no-playlist", "-g", src)
-	out, err := cmd.CombinedOutput()
-	raw := strings.TrimSpace(string(out))
-
-	log.Printf("[yt] raw out: %q", raw)
-
-	if err != nil {
-		// даже если ошибка — пробуем достать URL из вывода
-		log.Printf("[yt] err: %v", err)
+	type variant struct {
+		name string
+		args []string
 	}
 
-	lines := strings.Split(raw, "\n")
-	last := strings.TrimSpace(lines[len(lines)-1])
-
-	if !strings.HasPrefix(last, "http") {
-		return "", fmt.Errorf("yt-dlp: didn't find http url, last=%q", last)
+	variants := []variant{
+		{
+			name: "bestaudio-m4a",
+			args: []string{"-f", "bestaudio[ext=m4a]/bestaudio", "--no-playlist", "-g", src},
+		},
+		{
+			name: "bestaudio",
+			args: []string{"-f", "bestaudio", "--no-playlist", "-g", src},
+		},
+		{
+			name: "raw",
+			args: []string{"-g", src},
+		},
 	}
 
-	log.Printf("[yt] resolved audio URL: %.120s", last)
-	return last, nil
+	for _, v := range variants {
+		log.Printf("[PTRP] yt-dlp try: %s → yt-dlp %v", v.name, append([]string{}, v.args...))
+
+		cmd := exec.Command(ytPath, v.args...)
+		out, err := cmd.CombinedOutput()
+		outStr := strings.TrimSpace(string(out))
+
+		if err != nil {
+			log.Printf("[PTRP] yt-dlp err (%s): %v", v.name, err)
+			log.Printf("[PTRP] yt-dlp out (%s): %s", v.name, outStr)
+			continue
+		}
+
+		if outStr == "" {
+			log.Printf("[PTRP] yt-dlp empty output (%s)", v.name)
+			continue
+		}
+
+		lines := strings.Split(outStr, "\n")
+		last := strings.TrimSpace(lines[len(lines)-1])
+		if !strings.HasPrefix(last, "http") {
+			log.Printf("[PTRP] yt-dlp non-http line (%s): %q (full=%q)", v.name, last, outStr)
+			continue
+		}
+
+		log.Printf("[PTRP] RESOLVED (%s): %.80s…", v.name, last)
+		return last, nil
+	}
+
+	return "", fmt.Errorf("yt-dlp: all variants failed for %s", src)
 }
