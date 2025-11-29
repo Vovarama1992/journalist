@@ -54,8 +54,10 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 		"-i", url,
 		"-vn",
 		"-ac", "1",
-		"-ar", "48000",
-		"-f", "s16le",
+		"-ar", "16000",
+		"-c:a", "libopus",
+		"-b:a", "24k",
+		"-f", "ogg",
 		"pipe:1",
 	)
 
