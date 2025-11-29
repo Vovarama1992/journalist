@@ -7,7 +7,6 @@ import (
 	"log"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/Vovarama1992/journalist/internal/models"
 	"github.com/Vovarama1992/journalist/internal/ports"
@@ -31,76 +30,62 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 	return s.events
 }
 
-//////////////////////////////////////////////////////////////
-// capture5secWav — ВЫРЕЗАЕТ РОВНО 5 СЕК PCM 16k mono s16le
-//////////////////////////////////////////////////////////////
+func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.ReadCloser, error) {
+	log.Printf("[stream] continuousCapture START url=%.80s", url)
 
-func (s *MediaService) capture5secWav(url string) ([]byte, error) {
-	log.Printf("[cap] url=%.80s", url)
-
-	cmd := exec.Command(
+	cmd := exec.CommandContext(
+		ctx,
 		"ffmpeg",
 		"-re",
-		"-rw_timeout", "15000000", // 15ms → нет зависаний
-		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
+		"-seekable", "0",
 		"-i", url,
 		"-vn",
 		"-ac", "1",
 		"-ar", "16000",
-		"-t", "5",
 		"-f", "s16le",
 		"pipe:1",
 	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
+
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	data, rErr := io.ReadAll(stdout)
-	errLog, _ := io.ReadAll(stderr)
-	_ = cmd.Wait()
+	// логируем stderr в фоне
+	go func() {
+		errLog, _ := io.ReadAll(stderr)
+		if len(errLog) > 0 {
+			log.Printf("[stream] ffmpeg stderr: %s", errLog)
+		}
+		log.Printf("[stream] ffmpeg finished")
+	}()
 
-	if len(errLog) > 0 {
-		log.Printf("[cap] ffmpeg: %s", errLog)
-	}
-	if rErr != nil {
-		return nil, rErr
-	}
-	if len(data) < 8000 {
-		return nil, fmt.Errorf("wav too small: %d", len(data))
-	}
-
-	return data, nil
+	return stdout, nil
 }
 
-//////////////////////////////////////////////////////////////
-// ProcessMedia — чистый ПТРП: каждые 5 сек ffmpeg → STT → WS
-//////////////////////////////////////////////////////////////
+// ProcessMedia — запускает поток ffmpeg → режет каждые 5 секунд → STT → WS.
 
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error) {
-
 	log.Printf("[media] start PTRP: %.60s…", sourceURL)
 
-	// --- YouTube резолв ---
+	// youtube → прямой аудио URL
 	if strings.Contains(sourceURL, "youtube") || strings.Contains(sourceURL, "youtu.be") {
 		log.Printf("[media] youtube detected, resolving…")
 		u, err := ResolveYouTube(sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve youtube failed: %w", err)
 		}
-		log.Printf("[media] resolved RAW: %s", u) // <<< СМОТРИМ ЧТО ВЕРНУЛ yt-dlp
+		log.Printf("[media] resolved URL: %s", u)
 		sourceURL = u
 	}
 
-	log.Printf("[DEBUG] FINAL RESOLVED URL = %s", sourceURL) // <<< ЭТО НАМ НУЖНО
-
-	// --- создаём media запись ---
+	// создаём запись media
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
 		SourceURL: sourceURL,
 		Type:      mediaType,
@@ -109,11 +94,17 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		return nil, err
 	}
 
-	/////////////////////////////////////////////////////////
-	// Запускам бесконечный цикл ПТРП
-	/////////////////////////////////////////////////////////
+	// запускаем один ffmpeg-поток
+	stream, err := s.continuousCapture(ctx, sourceURL)
+	if err != nil {
+		return nil, fmt.Errorf("continuousCapture: %w", err)
+	}
 
 	go func() {
+		defer stream.Close()
+
+		const chunkBytes = 160000 // 5 сек PCM
+		buf := make([]byte, chunkBytes)
 		chunkNum := 1
 
 		for {
@@ -121,50 +112,54 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 			case <-ctx.Done():
 				log.Printf("[media] ctx done — stop PTRP")
 				return
+
 			default:
-			}
+				// читаем ровно 5 сек
+				n, err := io.ReadFull(stream, buf)
+				if err != nil {
+					log.Printf("[media] readFull err: %v", err)
+					return
+				}
 
-			// 1) режем WAV 5 сек
-			wav, err := s.capture5secWav(sourceURL)
-			if err != nil {
-				log.Printf("[media] capture error: %v", err)
-				time.Sleep(1 * time.Second)
-				continue
-			}
+				if n < chunkBytes {
+					log.Printf("[media] short read %d bytes", n)
+					continue
+				}
 
-			// 2) STT
-			txt, err := s.stt.Recognize(ctx, wav)
-			if err != nil {
-				log.Printf("[media] STT err chunk=%d: %v", chunkNum, err)
+				// STT
+				txt, err := s.stt.Recognize(ctx, buf)
+				if err != nil {
+					log.Printf("[media] STT err chunk=%d: %v", chunkNum, err)
+					chunkNum++
+					continue
+				}
+
+				txt = strings.TrimSpace(txt)
+				if txt == "" {
+					log.Printf("[media] empty text chunk=%d", chunkNum)
+					chunkNum++
+					continue
+				}
+
+				// в БД
+				_ = s.repo.InsertChunk(ctx, &models.MediaChunk{
+					MediaID:     media.ID,
+					ChunkNumber: chunkNum,
+					Text:        txt,
+				})
+
+				log.Printf("[media] SEND chunk=%d media=%d: %.40s", chunkNum, media.ID, txt)
+
+				// в WS
+				s.events <- ports.ChunkEvent{
+					MediaID:     media.ID,
+					ChunkNumber: chunkNum,
+					RoomID:      roomID,
+					Text:        txt,
+				}
+
 				chunkNum++
-				continue
 			}
-
-			txt = strings.TrimSpace(txt)
-			if txt == "" {
-				log.Printf("[media] empty text chunk=%d", chunkNum)
-				chunkNum++
-				continue
-			}
-
-			// 3) сохр в БД
-			_ = s.repo.InsertChunk(ctx, &models.MediaChunk{
-				MediaID:     media.ID,
-				ChunkNumber: chunkNum,
-				Text:        txt,
-			})
-
-			// 4) пуш в websocket
-			log.Printf("[media] SEND chunk=%d media=%d: %.40s", chunkNum, media.ID, txt)
-
-			s.events <- ports.ChunkEvent{
-				MediaID:     media.ID,
-				ChunkNumber: chunkNum,
-				RoomID:      roomID,
-				Text:        txt,
-			}
-
-			chunkNum++
 		}
 	}()
 
