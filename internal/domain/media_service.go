@@ -2,8 +2,10 @@ package domain
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"strings"
@@ -32,19 +34,24 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 2) start ffmpeg
+// YOUTUBE RESOLVER
+///////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////
+// 1) startFFmpeg — выдаём НЕ OPUS, а PCM (WAV RAW), чтобы Yandex не ругался
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Reader, *exec.Cmd, error) {
 	log.Printf("[media] ffmpeg start (PCM): %.60s…", url)
 
+	// PCM — чтоб 100% Yandex ел любые куски
 	cmd := exec.CommandContext(ctx,
 		"ffmpeg",
 		"-i", url,
 		"-vn",
-		"-ac", "1", // mono
-		"-ar", "16000", // 16 kHz — идеально для STT
-		"-f", "s16le", // RAW PCM (режь где хочешь)
+		"-ac", "1",
+		"-ar", "16000",
+		"-f", "s16le", // RAW PCM 16-bit signed
 		"pipe:1",
 	)
 
@@ -61,100 +68,105 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 3) read chunk from ffmpeg
+// 2) Это основной цикл чтения чанков каждые 10 секунд
 ///////////////////////////////////////////////////////////////////////
 
-func (s *MediaService) readFromFFmpeg(reader *bufio.Reader) ([]byte, error) {
-	tmp := make([]byte, 256*1024)
-	n, err := reader.Read(tmp)
-	if n > 0 {
-		return tmp[:n], nil
-	}
-	return nil, err
-}
-
-///////////////////////////////////////////////////////////////////////
-// 4) save chunk + STT (+ roomID)
-///////////////////////////////////////////////////////////////////////
-
-func (s *MediaService) saveAndProcessChunk(
+func (s *MediaService) readChunksLoop(
 	ctx context.Context,
-	mediaID int,
-	chunkNum int,
-	audio []byte,
+	reader io.Reader,
+	media *models.Media,
 	roomID string,
 ) {
-	rawSize := len(audio)
-	log.Printf("[media] chunk %d raw-bytes=%d", chunkNum, rawSize)
 
-	// показать первые ~40 байт
-	prev := 40
-	if rawSize < prev {
-		prev = rawSize
-	}
-	log.Printf("[media] chunk %d preview=%v", chunkNum, audio[:prev])
+	const chunkDuration = 10 * time.Second
+	tmp := make([]byte, 64*1024)
 
-	// сначала пишем в БД с пустым текстом
-	chunk := &models.MediaChunk{
-		MediaID:     mediaID,
-		ChunkNumber: chunkNum,
-		Text:        "",
-	}
-	_ = s.repo.InsertChunk(ctx, chunk)
+	buf := &bytes.Buffer{}
+	chunkNum := 0
 
-	// отдельная горутина → STT
-	go func(c *models.MediaChunk, data []byte) {
-		text, err := s.stt.Recognize(ctx, data)
-		if err != nil {
-			log.Printf("[media] STT error chunk %d: %v", c.ChunkNumber, err)
+	timer := time.NewTimer(chunkDuration)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[media] ctx done")
 			return
+
+		case <-timer.C:
+			raw := buf.Bytes()
+			chunkNum++
+
+			log.Printf("[media] TIME-CUT chunk=%d raw=%d bytes", chunkNum, len(raw))
+
+			if len(raw) > 0 {
+				// отправляем на STT
+				text, err := s.stt.Recognize(ctx, raw)
+				if err != nil {
+					log.Printf("[media] STT error chunk=%d: %v", chunkNum, err)
+				} else if strings.TrimSpace(text) != "" {
+					// сохраняем в БД
+					ch := &models.MediaChunk{
+						MediaID:     media.ID,
+						ChunkNumber: chunkNum,
+						Text:        text,
+					}
+					_ = s.repo.InsertChunk(ctx, ch)
+
+					// шлём наружу
+					s.events <- ports.ChunkEvent{
+						RoomID:      roomID,
+						MediaID:     media.ID,
+						ChunkNumber: chunkNum,
+						Text:        text,
+					}
+					log.Printf("[media] SEND chunk=%d text-len=%d", chunkNum, len(text))
+				} else {
+					log.Printf("[media] empty-text chunk=%d", chunkNum)
+				}
+			}
+
+			// сбрасываем буфер
+			buf.Reset()
+			timer.Reset(chunkDuration)
+
+		default:
+			// читаем ffmpeg
+			n, err := reader.Read(tmp)
+			if n > 0 {
+				buf.Write(tmp[:n])
+			}
+			if err != nil {
+				if err == io.EOF {
+					log.Printf("[media] ffmpeg EOF — finish")
+					return
+				}
+				log.Printf("[media] ffmpeg read error: %v", err)
+				return
+			}
 		}
-
-		log.Printf("[media] STT text chunk=%d len=%d text=%.40s...", c.ChunkNumber, len(text), text)
-
-		// если пусто — просто не шлём в WebSocket
-		if strings.TrimSpace(text) == "" {
-			log.Printf("[media] skip empty text chunk=%d", c.ChunkNumber)
-			return
-		}
-
-		// обновляем текст в БД
-		_ = s.repo.UpdateChunkText(ctx, c.ID, text)
-
-		// пушим наружу
-		s.events <- ports.ChunkEvent{
-			RoomID:      roomID,
-			MediaID:     c.MediaID,
-			ChunkNumber: c.ChunkNumber,
-			Text:        text,
-		}
-
-		log.Printf("[SEND] room=%s chunk=%d media=%d text=%.40s...",
-			roomID, c.ChunkNumber, c.MediaID, text)
-	}(chunk, audio)
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 5) ProcessMedia — принимает roomID
+// 3) ProcessMedia — обвязка
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error) {
+
 	log.Printf("[media] start: %.60s…", sourceURL)
 
 	// youtube
 	if strings.Contains(sourceURL, "youtube") || strings.Contains(sourceURL, "youtu.be") {
 		log.Printf("[media] youtube detected, resolving…")
-
 		u, err := ResolveYouTube(sourceURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve youtube failed: %w", err)
 		}
-
 		log.Printf("[media] resolved: %.60s…", u)
 		sourceURL = u
 	}
 
-	// create media
+	// create media DB
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
 		SourceURL: sourceURL,
 		Type:      mediaType,
@@ -163,52 +175,18 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		return nil, err
 	}
 
-	// start ffmpeg
+	// FFmpeg
 	reader, cmd, err := s.startFFmpeg(ctx, sourceURL)
 	if err != nil {
 		return nil, err
 	}
 
-	var buf []byte
-	chunkNum := 0
-
-	const minChunkSize = 20 * 1024 // 20 KB
-
-	ticker := time.NewTicker(6 * time.Second)
-	defer ticker.Stop()
-
+	// читаем chunk-циклом
 	go func() {
-		for range ticker.C {
-			if len(buf) < minChunkSize {
-				log.Printf("[media] skip chunk: too small (%d bytes)", len(buf))
-				continue
-			}
-
-			// copy exact audio slice
-			audioCopy := make([]byte, len(buf))
-			copy(audioCopy, buf)
-
-			// reset buffer
-			buf = buf[:0]
-
-			chunkNum++
-			s.saveAndProcessChunk(ctx, media.ID, chunkNum, audioCopy, roomID)
-		}
+		s.readChunksLoop(ctx, reader, media, roomID)
+		cmd.Wait()
+		log.Printf("[media] finished mediaID=%d", media.ID)
 	}()
 
-	// read ffmpeg
-	for {
-		frame, err := s.readFromFFmpeg(reader)
-		if frame != nil && len(frame) > 0 {
-			buf = append(buf, frame...)
-		}
-		if err != nil {
-			log.Printf("[media] ffmpeg read stop: %v", err)
-			break
-		}
-	}
-
-	cmd.Wait()
-	log.Printf("[media] finished mediaID=%d", media.ID)
 	return media, nil
 }

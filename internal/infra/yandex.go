@@ -52,7 +52,7 @@ func detectContentType(audio []byte) string {
 }
 
 func (y *YandexSTTService) Recognize(ctx context.Context, audio []byte) (string, error) {
-	contentType := detectContentType(audio)
+	contentType := "audio/l16; rate=16000"
 
 	req, err := http.NewRequestWithContext(ctx, "POST", y.URL, bytes.NewReader(audio))
 	if err != nil {
