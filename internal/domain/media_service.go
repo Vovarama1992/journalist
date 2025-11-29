@@ -42,6 +42,8 @@ func (s *MediaService) capture5secWav(url string) ([]byte, error) {
 
 	cmd := exec.Command(
 		"ffmpeg",
+		"-user_agent", "Mozilla/5.0",
+		"-headers", "Accept: */*",
 		"-i", url,
 		"-vn",
 		"-ac", "1",
