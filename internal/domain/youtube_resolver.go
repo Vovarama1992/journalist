@@ -1,17 +1,20 @@
 package domain
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 )
 
-// ResolveYouTube получает прямой audio-URL через yt-dlp -g.
-// ВСЁ. Никаких fallback, никак не мудрим.
-// yt-dlp сам давал стабильный stream.
-// Это была самая рабочая версия.
+// ResolveYouTube — самый простой и стабильный рабочий резолвер.
+// Используем ПОЛНЫЙ путь к yt-dlp, т.к. Go-процесс внутри контейнера
+// НЕ видит /usr/local/bin без явного указания.
 func ResolveYouTube(url string) (string, error) {
+
+	yt := "/usr/local/bin/yt-dlp"
+
 	cmd := exec.Command(
-		"yt-dlp",
+		yt,
 		"-f", "bestaudio",
 		"-g",
 		url,
@@ -19,10 +22,14 @@ func ResolveYouTube(url string) (string, error) {
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("yt-dlp failed: %w, output=%s", err, string(out))
 	}
 
-	// Берём последнюю строку — там всегда прямой URL
+	// Последняя строка = прямой media URL
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 {
+		return "", fmt.Errorf("no output from yt-dlp")
+	}
+
 	return lines[len(lines)-1], nil
 }
