@@ -1,7 +1,6 @@
-package delivery
+package ws
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 
@@ -24,52 +23,34 @@ func WSHandler(hub *Hub, mediaService *domain.MediaService) http.HandlerFunc {
 		hub.Register(roomID, conn)
 		defer hub.Unregister(roomID)
 
-		//------------------------------------------------------
-		// получаем от клиента URL для обработки
-		//------------------------------------------------------
-
-		_, msg, err := conn.ReadMessage()
+		// ---------------------------------------------------
+		// читаем URL от клиента
+		// ---------------------------------------------------
+		_, urlBytes, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("read url failed: %v", err)
 			return
 		}
-		url := string(msg)
+		url := string(urlBytes)
 
-		_ = hub.SendToRoom(roomID, []byte("processing started"))
+		// первый пуш клиенту
+		hub.SendToRoom(roomID, []byte(`{"status":"processing_started"}`))
 
-		//------------------------------------------------------
-		// слушаем события чанков → пушим в WebSocket
-		//------------------------------------------------------
-
-		go func() {
-			for event := range mediaService.Events() {
-				payload := []byte(
-					fmt.Sprintf(`{"mediaId": %d, "chunk": %d, "text": "%s"}`,
-						event.MediaID,
-						event.ChunkNumber,
-						event.Text,
-					),
-				)
-				hub.SendToRoom(roomID, payload)
-			}
-		}()
-
-		//------------------------------------------------------
-		// запускаем обработку медиа
-		//------------------------------------------------------
-
+		// ---------------------------------------------------
+		// запускаем процесс медиа
+		// ---------------------------------------------------
 		go func() {
 			_, err := mediaService.ProcessMedia(r.Context(), url, "audio")
 			if err != nil {
 				log.Printf("process media error: %v", err)
 			}
-			hub.SendToRoom(roomID, []byte("processing finished"))
+
+			hub.SendToRoom(roomID, []byte(`{"status":"processing_finished"}`))
 		}()
 
-		//------------------------------------------------------
-		// держим WebSocket открытым
-		//------------------------------------------------------
-
+		// ---------------------------------------------------
+		// держим соединение открытым, чтобы клиент не отвалился
+		// ---------------------------------------------------
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {

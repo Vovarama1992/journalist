@@ -1,54 +1,76 @@
-package delivery
+package ws
 
 import (
+	"log"
 	"net/http"
 	"sync"
 
 	"github.com/gorilla/websocket"
 )
 
-// Hub управляет WebSocket-соединениями
 type Hub struct {
-	mu          sync.Mutex
-	connections map[string]*websocket.Conn // roomID/userID -> conn
+	mu    sync.RWMutex
+	rooms map[string]map[*websocket.Conn]bool
 }
 
-// NewHub создаёт новый хаб
 func NewHub() *Hub {
 	return &Hub{
-		connections: make(map[string]*websocket.Conn),
+		rooms: make(map[string]map[*websocket.Conn]bool),
 	}
 }
 
-// Register добавляет подключение
 func (h *Hub) Register(roomID string, conn *websocket.Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.connections[roomID] = conn
+
+	if h.rooms[roomID] == nil {
+		h.rooms[roomID] = make(map[*websocket.Conn]bool)
+	}
+	h.rooms[roomID][conn] = true
 }
 
-// Unregister удаляет подключение
 func (h *Hub) Unregister(roomID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if conn, ok := h.connections[roomID]; ok {
-		conn.Close()
-		delete(h.connections, roomID)
+
+	if conns, ok := h.rooms[roomID]; ok {
+		for conn := range conns {
+			conn.Close()
+			delete(conns, conn)
+		}
+		delete(h.rooms, roomID)
 	}
 }
 
-// SendToRoom отправляет сообщение клиенту по roomID
-func (h *Hub) SendToRoom(roomID string, message []byte) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	conn, ok := h.connections[roomID]
+func (h *Hub) SendToRoom(roomID string, msg []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	conns, ok := h.rooms[roomID]
 	if !ok {
-		return nil
+		return
 	}
-	return conn.WriteMessage(websocket.TextMessage, message)
+
+	for conn := range conns {
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			log.Printf("[hub] sendToRoom err room=%s: %v", roomID, err)
+		}
+	}
 }
 
-// Upgrader для WebSocket
+func (h *Hub) Broadcast(msg []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for roomID, conns := range h.rooms {
+		for conn := range conns {
+			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				log.Printf("[hub] broadcast err room=%s: %v", roomID, err)
+			}
+		}
+	}
+}
+
 var Upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,

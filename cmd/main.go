@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -19,15 +20,11 @@ import (
 
 func main() {
 
-	// ----------------------------------------
 	// LOGGER
-	// ----------------------------------------
 	zcore, _ := zap.NewProduction()
 	zl := logger.NewZapLogger(zcore.Sugar())
 
-	// ----------------------------------------
 	// ENV
-	// ----------------------------------------
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -43,9 +40,7 @@ func main() {
 		panic("AUTH_SECRET is not set")
 	}
 
-	// ----------------------------------------
-	// POSTGRES (pgxpool)
-	// ----------------------------------------
+	// POSTGRES
 	ctx := context.Background()
 
 	pool, err := pgxpool.New(ctx, dsn)
@@ -61,9 +56,7 @@ func main() {
 		panic("postgres ping failed: " + err.Error())
 	}
 
-	// ----------------------------------------
 	// SERVICES
-	// ----------------------------------------
 	authService := domain.NewAuthService(pool, secret)
 
 	mediaRepo := infra.NewPostgresMediaRepo(pool)
@@ -72,23 +65,30 @@ func main() {
 
 	streamService := domain.NewStreamService(zl)
 
-	// ----------------------------------------
+	// WS HUB
+	hub := ws.NewHub()
+
+	// ГЛАВНЫЙ broadcast listener
+	go func() {
+		for ev := range mediaService.Events() {
+			payload := []byte(
+				fmt.Sprintf(`{"mediaId": %d, "chunk": %d, "text": "%s"}`,
+					ev.MediaID,
+					ev.ChunkNumber,
+					ev.Text,
+				),
+			)
+			hub.Broadcast(payload)
+		}
+	}()
+
 	// HANDLERS
-	// ----------------------------------------
 	authHandler := delivery.NewAuthHandler(authService, zl)
 	streamHandler := delivery.NewStreamHandler(zl, streamService)
 
-	// ----------------------------------------
-	// WS HUB
-	// ----------------------------------------
-	hub := ws.NewHub()
-
-	// ----------------------------------------
 	// ROUTER
-	// ----------------------------------------
 	r := chi.NewRouter()
 
-	// CORS
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
@@ -102,14 +102,10 @@ func main() {
 	// WS route
 	r.Get("/ws", ws.WSHandler(hub, mediaService))
 
-	// healthcheck
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
 
-	// ----------------------------------------
-	// START SERVER
-	// ----------------------------------------
 	zl.Log(logger.LogEntry{
 		Level:   "info",
 		Message: "server started",
