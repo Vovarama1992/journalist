@@ -1,13 +1,7 @@
 package ports
 
-import (
-	"context"
-)
+import "context"
 
-// Postgres репозиторий (progress infra)
-
-// STT сервис (Yandex infra)
 type STTService interface {
-	// Отправить кусок аудио, получить текст
-	Recognize(ctx context.Context, audio []byte) (string, error)
+	Recognize(ctx context.Context, wav []byte) (string, error)
 }

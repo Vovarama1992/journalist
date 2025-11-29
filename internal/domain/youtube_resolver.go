@@ -1,8 +1,6 @@
 package domain
 
 import (
-	"fmt"
-	"log"
 	"os/exec"
 	"strings"
 )
@@ -11,16 +9,14 @@ import (
 func ResolveYouTube(url string) (string, error) {
 	cmd := exec.Command(
 		"yt-dlp",
-		"--no-check-certificate",
-		"-f", "bestaudio[ext=m4a]/bestaudio*/best",
+		"-f", "bestaudio",
 		"-g",
 		url,
 	)
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("[yt-dlp] ERROR: %s", string(out))
-		return "", fmt.Errorf("yt-dlp failed: %w", err)
+		return "", err
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
