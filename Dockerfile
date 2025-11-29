@@ -14,10 +14,9 @@ FROM debian:stable-slim
 
 RUN apt update && \
     apt install -y curl ffmpeg ca-certificates python3 python3-pip xz-utils && \
-    pip3 install --break-system-packages yt-dlp && \
     apt clean
 
-# --- ставим Node.js вручную, гарантированно рабочий ---
+# --- ставим Node.js СНАЧАЛА ---
 RUN curl -fsSL https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz -o node.tar.xz && \
     tar -xJf node.tar.xz && \
     mv node-v20.11.1-linux-x64 /usr/local/node && \
@@ -25,11 +24,15 @@ RUN curl -fsSL https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz -
     ln -s /usr/local/node/bin/npm /usr/local/bin/npm && \
     rm node.tar.xz
 
-# теперь node точно в PATH и yt-dlp его увидит
+# проверка что node доступен
 RUN node -v
+
+# --- теперь ставим yt-dlp ---
+RUN pip3 install --break-system-packages yt-dlp
 
 WORKDIR /app
 COPY --from=builder /app/server /app/server
 
 EXPOSE 8080
+RUN which node && node -v && which yt-dlp && yt-dlp --version
 CMD ["/app/server"]
