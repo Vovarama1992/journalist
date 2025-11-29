@@ -14,22 +14,24 @@ import (
 func ResolveYouTube(src string) (string, error) {
 	const yt = "/usr/local/bin/yt-dlp"
 
-	// берём прямой аудиопоток m4a (144k)
 	cmd := exec.Command(yt, "-f", "140", "--no-playlist", "-g", src)
-
 	out, err := cmd.CombinedOutput()
-	s := strings.TrimSpace(string(out))
+	raw := strings.TrimSpace(string(out))
 
-	log.Printf("[yt] raw out: %q", s)
+	log.Printf("[yt] raw out: %q", raw)
 
 	if err != nil {
-		return "", fmt.Errorf("yt-dlp err: %w, out=%s", err, s)
+		// даже если ошибка — пробуем достать URL из вывода
+		log.Printf("[yt] err: %v", err)
 	}
 
-	if !strings.HasPrefix(s, "http") {
-		return "", fmt.Errorf("invalid yt-dlp output: %q", s)
+	lines := strings.Split(raw, "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+
+	if !strings.HasPrefix(last, "http") {
+		return "", fmt.Errorf("yt-dlp: didn't find http url, last=%q", last)
 	}
 
-	log.Printf("[yt] resolved audio URL: %.100s", s)
-	return s, nil
+	log.Printf("[yt] resolved audio URL: %.120s", last)
+	return last, nil
 }
