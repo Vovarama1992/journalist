@@ -32,17 +32,6 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 }
 
 ///////////////////////////////////////////////////////////////////////
-// 1) create media
-///////////////////////////////////////////////////////////////////////
-
-func (s *MediaService) createMedia(ctx context.Context, src, typ string) (*models.Media, error) {
-	return s.repo.InsertMedia(ctx, &models.Media{
-		SourceURL: src,
-		Type:      typ,
-	})
-}
-
-///////////////////////////////////////////////////////////////////////
 // 2) start ffmpeg
 ///////////////////////////////////////////////////////////////////////
 
@@ -77,21 +66,12 @@ func (s *MediaService) startFFmpeg(ctx context.Context, url string) (*bufio.Read
 ///////////////////////////////////////////////////////////////////////
 
 func (s *MediaService) readFromFFmpeg(reader *bufio.Reader) ([]byte, error) {
-	// читаем до 128 KB за раз
-	buf := make([]byte, 128*1024)
-
-	n, err := reader.Read(buf)
-	if n == 0 {
-		return nil, err
+	tmp := make([]byte, 256*1024)
+	n, err := reader.Read(tmp)
+	if n > 0 {
+		return tmp[:n], nil
 	}
-
-	// если ffmpeg дал слишком маленький кусок — пропускаем
-	if n < 4*1024 {
-		log.Printf("[media] ffmpeg tiny-frame=%d bytes (skip)", n)
-		return nil, nil
-	}
-
-	return buf[:n], err
+	return nil, err
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -162,7 +142,7 @@ func (s *MediaService) saveAndProcessChunk(
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error) {
 	log.Printf("[media] start: %.60s…", sourceURL)
 
-	// resolve youtube
+	// youtube
 	if strings.Contains(sourceURL, "youtube") || strings.Contains(sourceURL, "youtu.be") {
 		log.Printf("[media] youtube detected, resolving…")
 
@@ -175,7 +155,7 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		sourceURL = u
 	}
 
-	// create media row
+	// create media
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
 		SourceURL: sourceURL,
 		Type:      mediaType,
@@ -184,36 +164,32 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		return nil, err
 	}
 
-	// ffmpeg pipe
+	// start ffmpeg
 	reader, cmd, err := s.startFFmpeg(ctx, sourceURL)
 	if err != nil {
 		return nil, err
 	}
 
-	// accumulator
 	var buf []byte
 	chunkNum := 0
 
-	// желаемый минимальный размер чанка — 120 KB
-	const minChunkSize = 120 * 1024
+	const minChunkSize = 20 * 1024 // 20 KB
 
-	// тикер 6 сек
 	ticker := time.NewTicker(6 * time.Second)
 	defer ticker.Stop()
 
 	go func() {
 		for range ticker.C {
 			if len(buf) < minChunkSize {
-				// слишком маленький чанк — ждём наполнение
-				log.Printf("[media] skip: chunk too small (%d bytes), waiting…", len(buf))
+				log.Printf("[media] skip chunk: too small (%d bytes)", len(buf))
 				continue
 			}
 
-			// копия буфера
+			// copy exact audio slice
 			audioCopy := make([]byte, len(buf))
 			copy(audioCopy, buf)
 
-			// сбрасываем буфер
+			// reset buffer
 			buf = buf[:0]
 
 			chunkNum++
@@ -221,13 +197,12 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		}
 	}()
 
-	// читаем ffmpeg поток
+	// read ffmpeg
 	for {
 		frame, err := s.readFromFFmpeg(reader)
 		if frame != nil && len(frame) > 0 {
 			buf = append(buf, frame...)
 		}
-
 		if err != nil {
 			log.Printf("[media] ffmpeg read stop: %v", err)
 			break
