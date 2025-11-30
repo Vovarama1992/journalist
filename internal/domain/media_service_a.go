@@ -12,77 +12,171 @@ import (
 	"github.com/Vovarama1992/journalist/internal/ports"
 )
 
-type NewMediaService struct {
+type AgressiveMediaService struct {
 	repo   ports.MediaRepository
 	stt    ports.STTService
 	events chan ports.ChunkEvent
 }
 
-func NewNewMediaService(repo ports.MediaRepository, stt ports.STTService) *NewMediaService {
-	return &NewMediaService{
+func NewAgressiveMediaService(repo ports.MediaRepository, stt ports.STTService) *AgressiveMediaService {
+	return &AgressiveMediaService{
 		repo:   repo,
 		stt:    stt,
 		events: make(chan ports.ChunkEvent, 100),
 	}
 }
 
-func (s *NewMediaService) Events() <-chan ports.ChunkEvent {
+func (s *AgressiveMediaService) Events() <-chan ports.ChunkEvent {
 	return s.events
 }
 
-// СТАНЦИЯ 1 — PCM_START_ONE_CHUNK
-func (s *NewMediaService) PCM_ONE(ctx context.Context, url string) ([]byte, error) {
-	log.Printf("[PCM_ONE][IN] url=%s", url)
+////////////////////////////////////////////////////////////////////////////////
+// СТАНЦИЯ 0 — RESOLVE
+////////////////////////////////////////////////////////////////////////////////
+
+func (s *AgressiveMediaService) RESOLVE(ctx context.Context, raw string) (string, error) {
+	log.Printf("[RESOLVE][IN] raw=%s", raw)
+
+	if strings.Contains(raw, "youtube.com") || strings.Contains(raw, "youtu.be") {
+
+		extract := func(format string) (string, error) {
+			out, err := exec.CommandContext(
+				ctx,
+				"yt-dlp",
+				"-f", format,
+				"--extractor-args", "youtube:player_client=default",
+				"--no-playlist",
+				"-g",
+				raw,
+			).CombinedOutput()
+
+			log.Printf("[RESOLVE][INSIDE] fmt=%s out=%q err=%v", format, out, err)
+
+			if err != nil {
+				return "", err
+			}
+
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			last := strings.TrimSpace(lines[len(lines)-1])
+
+			if !strings.HasPrefix(last, "http") {
+				return "", fmt.Errorf("invalid url line: %q", last)
+			}
+			return last, nil
+		}
+
+		if url, err := extract("bestaudio"); err == nil {
+			log.Printf("[RESOLVE][OUT] bestaudio=%s", url)
+			return url, nil
+		}
+
+		if url, err := extract("best"); err == nil {
+			log.Printf("[RESOLVE][OUT] best=%s", url)
+			return url, nil
+		}
+
+		return "", fmt.Errorf("yt-dlp failed for all formats")
+	}
+
+	log.Printf("[RESOLVE][OUT] passthrough=%s", raw)
+	return raw, nil
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// СТАНЦИЯ 1 — PCM_ONESHOT (подключение ffmpeg на 5 секунд)
+////////////////////////////////////////////////////////////////////////////////
+
+func (s *AgressiveMediaService) PCM_ONESHOT(ctx context.Context, url string) ([]byte, error) {
+	log.Printf("[PCM_ONESHOT][IN] url=%s", url)
 
 	cmd := exec.CommandContext(ctx,
-		"ffmpeg", "-re", "-seekable", "0",
-		"-i", url,
-		"-vn", "-ac", "1", "-ar", "16000",
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-y",
+		"-ss", "0",
 		"-t", "5",
-		"-f", "s16le", "pipe:1",
+		"-i", url,
+		"-vn",
+		"-ac", "1",
+		"-ar", "16000",
+		"-f", "s16le",
+		"pipe:1",
 	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("stdout: %w", err)
+		return nil, fmt.Errorf("pipe: %w", err)
 	}
+
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start: %w", err)
 	}
 
+	// INSIDE
 	go func() {
-		b, _ := io.ReadAll(stderr)
-		if len(b) > 0 {
-			log.Printf("[PCM_ONE][INSIDE] ffmpeg stderr=%s", b)
+		errbuf, _ := io.ReadAll(stderr)
+		if len(errbuf) > 0 {
+			log.Printf("[PCM_ONESHOT][INSIDE] ffmpeg stderr: %s", errbuf)
 		}
 	}()
 
-	out, err := io.ReadAll(stdout)
-	log.Printf("[PCM_ONE][OUT] pcm_len=%d err=%v", len(out), err)
+	const need = 160000
+	buf := make([]byte, need)
 
-	return out, nil
+	n, err := io.ReadFull(stdout, buf)
+	log.Printf("[PCM_ONESHOT][INSIDE] n=%d err=%v", n, err)
+
+	cmd.Wait()
+
+	if err != nil {
+		return nil, fmt.Errorf("read: %w", err)
+	}
+
+	log.Printf("[PCM_ONESHOT][OUT] ok len=%d", len(buf))
+	return buf, nil
 }
 
-// СТАНЦИЯ 2 — WAV
-func (s *NewMediaService) WAV(p []byte) []byte {
-	log.Printf("[WAV][IN] len=%d", len(p))
-	log.Printf("[WAV][OUT] len=%d", len(p))
-	return p
+////////////////////////////////////////////////////////////////////////////////
+// СТАНЦИЯ 2 — WAV (заглушка)
+////////////////////////////////////////////////////////////////////////////////
+
+func (s *AgressiveMediaService) WAV(pcm []byte) []byte {
+	log.Printf("[WAV][IN] pcm_len=%d", len(pcm))
+	out := pcm
+	log.Printf("[WAV][OUT] wav_len=%d", len(out))
+	return out
 }
 
+////////////////////////////////////////////////////////////////////////////////
 // СТАНЦИЯ 3 — STT
-func (s *NewMediaService) STT(ctx context.Context, wav []byte) (string, error) {
+////////////////////////////////////////////////////////////////////////////////
+
+func (s *AgressiveMediaService) STT(ctx context.Context, wav []byte) (string, error) {
 	log.Printf("[STT][IN] wav_len=%d", len(wav))
 	txt, err := s.stt.Recognize(ctx, wav)
 	log.Printf("[STT][OUT] txt=%.40s err=%v", txt, err)
 	return txt, err
 }
 
-func (s *NewMediaService) Process(ctx context.Context, url, roomID string) (*models.Media, error) {
+////////////////////////////////////////////////////////////////////////////////
+// ОРКЕСТР
+////////////////////////////////////////////////////////////////////////////////
 
-	media, err := s.repo.InsertMedia(ctx, &models.Media{SourceURL: url, Type: "audio"})
+func (s *AgressiveMediaService) Process(ctx context.Context, url, roomID string) (*models.Media, error) {
+
+	media, err := s.repo.InsertMedia(ctx, &models.Media{
+		SourceURL: url,
+		Type:      "audio",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// RESOLVE
+	resolved, err := s.RESOLVE(ctx, url)
 	if err != nil {
 		return nil, err
 	}
@@ -96,14 +190,17 @@ func (s *NewMediaService) Process(ctx context.Context, url, roomID string) (*mod
 				return
 
 			default:
-				pcm, err := s.PCM_ONE(ctx, url)
+				// СТАНЦИЯ PCM_ONESHOT
+				pcm, err := s.PCM_ONESHOT(ctx, resolved)
 				if err != nil {
-					log.Printf("[ORCH_NEW][ERR] PCM_ONE: %v", err)
+					log.Printf("[ORCH][ERR] PCM_ONESHOT: %v", err)
 					return
 				}
 
+				// WAV
 				wav := s.WAV(pcm)
 
+				// STT
 				txt, err := s.STT(ctx, wav)
 				if err != nil {
 					chunk++
