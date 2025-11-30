@@ -37,35 +37,47 @@ func (s *ConservativeMediaService) Events() <-chan ports.ChunkEvent {
 func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (string, error) {
 	log.Printf("[RESOLVE][IN] raw=%s", raw)
 
-	// YouTube
 	if strings.Contains(raw, "youtube.com") || strings.Contains(raw, "youtu.be") {
 
-		out, err := exec.CommandContext(
-			ctx,
-			"yt-dlp",
-			"-f", "bestaudio",
-			"--extractor-args", "youtube:player_client=default",
-			"--no-playlist",
-			"-g",
-			raw,
-		).CombinedOutput()
+		try := func(format string) (string, error) {
+			out, err := exec.CommandContext(
+				ctx,
+				"yt-dlp",
+				"-f", format,
+				"--extractor-args", "youtube:player_client=default",
+				"--no-playlist",
+				"-g",
+				raw,
+			).CombinedOutput()
 
-		log.Printf("[RESOLVE][INSIDE] yt-dlp out=%q err=%v", out, err)
+			log.Printf("[RESOLVE][INSIDE] fmt=%s out=%q err=%v", format, out, err)
 
-		if err != nil {
-			return "", fmt.Errorf("yt-dlp: %w", err)
+			if err != nil {
+				return "", err
+			}
+
+			url := strings.TrimSpace(string(out))
+			if !strings.HasPrefix(url, "http") {
+				return "", fmt.Errorf("invalid out: %q", url)
+			}
+			return url, nil
 		}
 
-		url := strings.TrimSpace(string(out))
-		if !strings.HasPrefix(url, "http") {
-			return "", fmt.Errorf("invalid yt-dlp output: %q", url)
+		// 1) пробуем bestaudio
+		if url, err := try("bestaudio"); err == nil {
+			log.Printf("[RESOLVE][OUT] resolved=%s", url)
+			return url, nil
 		}
 
-		log.Printf("[RESOLVE][OUT] resolved=%s", url)
-		return url, nil
+		// 2) fallback: best (видео+аудио)
+		if url, err := try("best"); err == nil {
+			log.Printf("[RESOLVE][OUT] fallback best=%s", url)
+			return url, nil
+		}
+
+		return "", fmt.Errorf("yt-dlp failed for all formats")
 	}
 
-	// Прямой медиафайл → пропускаем
 	log.Printf("[RESOLVE][OUT] passthrough=%s", raw)
 	return raw, nil
 }
