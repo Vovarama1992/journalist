@@ -37,18 +37,18 @@ func (s *ConservativeMediaService) Events() <-chan ports.ChunkEvent {
 func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (string, error) {
 	log.Printf("[RESOLVE][IN] raw=%s", raw)
 
-	// YouTube detection
+	// если YouTube
 	if strings.Contains(raw, "youtube.com") || strings.Contains(raw, "youtu.be") {
 
-		cmd := exec.CommandContext(ctx,
-			"/usr/local/bin/yt-dlp",
-			"-f", "140",
+		out, err := exec.CommandContext(
+			ctx,
+			"yt-dlp",
+			"-f", "bestaudio",
 			"--no-playlist",
 			"-g",
 			raw,
-		)
+		).CombinedOutput()
 
-		out, err := cmd.CombinedOutput()
 		log.Printf("[RESOLVE][INSIDE] yt-dlp out=%q err=%v", out, err)
 
 		if err != nil {
@@ -57,17 +57,14 @@ func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (str
 
 		url := strings.TrimSpace(string(out))
 		if !strings.HasPrefix(url, "http") {
-			return "", fmt.Errorf("resolve failed: bad output %q", url)
-		}
-		if !strings.Contains(url, "videoplayback") {
-			return "", fmt.Errorf("resolve failed: not direct audio link %q", url)
+			return "", fmt.Errorf("invalid yt-dlp output: %q", url)
 		}
 
 		log.Printf("[RESOLVE][OUT] resolved=%s", url)
 		return url, nil
 	}
 
-	// Not YouTube
+	// если НЕ YouTube — возвращаем как есть
 	log.Printf("[RESOLVE][OUT] passthrough=%s", raw)
 	return raw, nil
 }
