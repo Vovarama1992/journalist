@@ -38,44 +38,26 @@ func (s *AggressiveMediaService) Events() <-chan ports.ChunkEvent {
 // -----------------------------
 
 func (s *AggressiveMediaService) stationResolveURL(ctx context.Context, pageURL string) (string, error) {
-	log.Printf("[S1 IN] pageURL=%s", pageURL)
+	out, err := exec.CommandContext(
+		ctx,
+		"yt-dlp",
+		"--no-playlist",
+		"-g",
+		pageURL,
+	).CombinedOutput()
 
-	extract := func(format string) (string, error) {
-		out, err := exec.CommandContext(
-			ctx,
-			"yt-dlp",
-			"-f", format,
-			"--extractor-args", "youtube:player_client=default",
-			"--no-playlist",
-			"-g",
-			pageURL,
-		).CombinedOutput()
+	raw := strings.TrimSpace(string(out))
+	log.Printf("[S1 RESOLVE] raw=%q err=%v", raw, err)
 
-		raw := strings.TrimSpace(string(out))
-
-		log.Printf("[S1 INSIDE] fmt=%s rawOut=%q err=%v", format, raw, err)
-
-		if err != nil {
-			return "", fmt.Errorf("yt-dlp err: %w, out=%s", err, raw)
-		}
-
-		if raw == "" || !strings.HasPrefix(raw, "http") {
-			return "", fmt.Errorf("invalid url: %q", raw)
-		}
-
-		return raw, nil
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp failed: %w (%s)", err, raw)
 	}
 
-	if url, err := extract("bestaudio[ext=m4a]/bestaudio"); err == nil {
-		log.Printf("[S1 OUT] %s", url)
-		return url, nil
-	}
-	if url, err := extract("best"); err == nil {
-		log.Printf("[S1 OUT] %s", url)
-		return url, nil
+	if raw == "" || !strings.HasPrefix(raw, "http") {
+		return "", fmt.Errorf("invalid audio url: %q", raw)
 	}
 
-	return "", fmt.Errorf("all yt-dlp formats failed")
+	return raw, nil
 }
 
 // -----------------------------
