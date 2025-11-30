@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -12,221 +14,276 @@ import (
 	"github.com/Vovarama1992/journalist/internal/ports"
 )
 
-type AgressiveMediaService struct {
+// AggressiveMediaService — "под каждый чанк новое подключение".
+type AggressiveMediaService struct {
 	repo   ports.MediaRepository
 	stt    ports.STTService
 	events chan ports.ChunkEvent
 }
 
-func NewAgressiveMediaService(repo ports.MediaRepository, stt ports.STTService) *AgressiveMediaService {
-	return &AgressiveMediaService{
+func NewAggressiveMediaService(repo ports.MediaRepository, stt ports.STTService) *AggressiveMediaService {
+	return &AggressiveMediaService{
 		repo:   repo,
 		stt:    stt,
 		events: make(chan ports.ChunkEvent, 100),
 	}
 }
 
-func (s *AgressiveMediaService) Events() <-chan ports.ChunkEvent {
+func (s *AggressiveMediaService) Events() <-chan ports.ChunkEvent {
 	return s.events
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// СТАНЦИЯ 0 — RESOLVE
-////////////////////////////////////////////////////////////////////////////////
+// -----------------------------
+// СТАНЦИЯ 1 — исходный URL стрима → прямой audio-URL (через yt-dlp)
+// -----------------------------
 
-func (s *AgressiveMediaService) RESOLVE(ctx context.Context, raw string) (string, error) {
-	log.Printf("[RESOLVE][IN] raw=%s", raw)
+func (s *AggressiveMediaService) stationResolveURL(ctx context.Context, pageURL string) (string, error) {
+	log.Printf("[S1 IN] pageURL=%s", pageURL)
 
-	if strings.Contains(raw, "youtube.com") || strings.Contains(raw, "youtu.be") {
+	cmd := exec.CommandContext(ctx,
+		"yt-dlp",
+		"-f", "140", // aac audio
+		"--no-playlist",
+		"-g",
+		pageURL,
+	)
 
-		extract := func(format string) (string, error) {
-			out, err := exec.CommandContext(
-				ctx,
-				"yt-dlp",
-				"-f", format,
-				"--extractor-args", "youtube:player_client=default",
-				"--no-playlist",
-				"-g",
-				raw,
-			).CombinedOutput()
+	log.Printf("[S1 INSIDE] run: yt-dlp -f 140 -g %s", pageURL)
 
-			log.Printf("[RESOLVE][INSIDE] fmt=%s out=%q err=%v", format, out, err)
+	out, err := cmd.CombinedOutput()
+	raw := strings.TrimSpace(string(out))
 
-			if err != nil {
-				return "", err
-			}
+	log.Printf("[S1 INSIDE] rawOut=%q err=%v", raw, err)
 
-			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			last := strings.TrimSpace(lines[len(lines)-1])
-
-			if !strings.HasPrefix(last, "http") {
-				return "", fmt.Errorf("invalid url line: %q", last)
-			}
-			return last, nil
-		}
-
-		if url, err := extract("bestaudio"); err == nil {
-			log.Printf("[RESOLVE][OUT] bestaudio=%s", url)
-			return url, nil
-		}
-
-		if url, err := extract("best"); err == nil {
-			log.Printf("[RESOLVE][OUT] best=%s", url)
-			return url, nil
-		}
-
-		return "", fmt.Errorf("yt-dlp failed for all formats")
+	if err != nil {
+		return "", fmt.Errorf("[S1 OUT] yt-dlp err: %w, out=%s", err, raw)
+	}
+	if raw == "" || !strings.HasPrefix(raw, "http") {
+		return "", fmt.Errorf("[S1 OUT] invalid audio url: %q", raw)
 	}
 
-	log.Printf("[RESOLVE][OUT] passthrough=%s", raw)
+	log.Printf("[S1 OUT] audioURL=%s", raw)
 	return raw, nil
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// СТАНЦИЯ 1 — PCM_ONESHOT (подключение ffmpeg на 5 секунд)
-////////////////////////////////////////////////////////////////////////////////
+// -----------------------------
+// СТАНЦИЯ 2 — прямой audio-URL → 5 секунд PCM (s16le 16kHz mono)
+// -----------------------------
 
-func (s *AgressiveMediaService) PCM_ONESHOT(ctx context.Context, url string) ([]byte, error) {
-	log.Printf("[PCM_ONESHOT][IN] url=%s", url)
+func (s *AggressiveMediaService) stationGrabPCM(ctx context.Context, audioURL string) ([]byte, error) {
+	log.Printf("[S2 IN] audioURL=%s", audioURL)
 
 	cmd := exec.CommandContext(ctx,
 		"ffmpeg",
-		"-hide_banner",
-		"-loglevel", "error",
-		"-y",
-		"-ss", "0",
-		"-t", "5",
-		"-i", url,
+		"-i", audioURL,
 		"-vn",
 		"-ac", "1",
 		"-ar", "16000",
+		"-t", "5",
 		"-f", "s16le",
 		"pipe:1",
 	)
 
+	log.Printf("[S2 INSIDE] run: ffmpeg -i <audio> -ac 1 -ar 16000 -t 5 -f s16le pipe:1")
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("pipe: %w", err)
+		return nil, fmt.Errorf("[S2 OUT] stdout pipe: %w", err)
 	}
-
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start: %w", err)
+		return nil, fmt.Errorf("[S2 OUT] ffmpeg start: %w", err)
 	}
 
-	// INSIDE
+	// логируем stderr целиком
 	go func() {
-		errbuf, _ := io.ReadAll(stderr)
-		if len(errbuf) > 0 {
-			log.Printf("[PCM_ONESHOT][INSIDE] ffmpeg stderr: %s", errbuf)
+		b, _ := io.ReadAll(stderr)
+		if len(b) > 0 {
+			log.Printf("[S2 INSIDE FFMPEG STDERR] %s", b)
 		}
 	}()
 
-	const need = 160000
-	buf := make([]byte, need)
-
-	n, err := io.ReadFull(stdout, buf)
-	log.Printf("[PCM_ONESHOT][INSIDE] n=%d err=%v", n, err)
-
-	cmd.Wait()
-
+	pcm, err := io.ReadAll(stdout)
 	if err != nil {
-		return nil, fmt.Errorf("read: %w", err)
+		return nil, fmt.Errorf("[S2 OUT] read pcm: %w", err)
 	}
 
-	log.Printf("[PCM_ONESHOT][OUT] ok len=%d", len(buf))
-	return buf, nil
+	log.Printf("[S2 INSIDE] pcmBytes=%d", len(pcm))
+	if len(pcm) > 0 {
+		previewN := 32
+		if len(pcm) < previewN {
+			previewN = len(pcm)
+		}
+		log.Printf("[S2 INSIDE] pcm[0:%d]=%v", previewN, pcm[:previewN])
+	}
+
+	if err := cmd.Wait(); err != nil {
+		log.Printf("[S2 INSIDE] ffmpeg exit err=%v", err)
+		// всё равно считаем кусок валидным, если байты есть
+	}
+
+	log.Printf("[S2 OUT] pcm=%d bytes", len(pcm))
+	return pcm, nil
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// СТАНЦИЯ 2 — WAV (заглушка)
-////////////////////////////////////////////////////////////////////////////////
+// -----------------------------
+// СТАНЦИЯ 3 — PCM → WAV (RIFF header)
+// -----------------------------
 
-func (s *AgressiveMediaService) WAV(pcm []byte) []byte {
-	log.Printf("[WAV][IN] pcm_len=%d", len(pcm))
-	out := pcm
-	log.Printf("[WAV][OUT] wav_len=%d", len(out))
-	return out
+func (s *AggressiveMediaService) stationPCMtoWAV(pcm []byte) []byte {
+	log.Printf("[S3 IN] pcm=%d", len(pcm))
+
+	const (
+		sampleRate     = 16000
+		channels       = 1
+		bitsPerSample  = 16
+		bytesPerSample = bitsPerSample / 8
+	)
+
+	dataSize := len(pcm)
+	byteRate := sampleRate * channels * bytesPerSample
+	blockAlign := channels * bytesPerSample
+
+	buf := &bytes.Buffer{}
+
+	// RIFF header
+	buf.WriteString("RIFF")
+	_ = binary.Write(buf, binary.LittleEndian, uint32(36+dataSize))
+	buf.WriteString("WAVE")
+
+	// fmt chunk
+	buf.WriteString("fmt ")
+	_ = binary.Write(buf, binary.LittleEndian, uint32(16)) // PCM fmt chunk size
+	_ = binary.Write(buf, binary.LittleEndian, uint16(1))  // audio format = PCM
+	_ = binary.Write(buf, binary.LittleEndian, uint16(channels))
+	_ = binary.Write(buf, binary.LittleEndian, uint32(sampleRate))
+	_ = binary.Write(buf, binary.LittleEndian, uint32(byteRate))
+	_ = binary.Write(buf, binary.LittleEndian, uint16(blockAlign))
+	_ = binary.Write(buf, binary.LittleEndian, uint16(bitsPerSample))
+
+	// data chunk
+	buf.WriteString("data")
+	_ = binary.Write(buf, binary.LittleEndian, uint32(dataSize))
+	buf.Write(pcm)
+
+	wav := buf.Bytes()
+
+	log.Printf("[S3 INSIDE] wavBytes=%d", len(wav))
+	previewN := 64
+	if len(wav) < previewN {
+		previewN = len(wav)
+	}
+	if previewN > 0 {
+		log.Printf("[S3 INSIDE] wav[0:%d]=%v", previewN, wav[:previewN])
+	}
+
+	log.Printf("[S3 OUT] wav=%d", len(wav))
+	return wav
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// СТАНЦИЯ 3 — STT
-////////////////////////////////////////////////////////////////////////////////
+// -----------------------------
+// СТАНЦИЯ 4 — WAV → TEXT (Yandex STT)
+// -----------------------------
 
-func (s *AgressiveMediaService) STT(ctx context.Context, wav []byte) (string, error) {
-	log.Printf("[STT][IN] wav_len=%d", len(wav))
+func (s *AggressiveMediaService) stationSTT(ctx context.Context, wav []byte) (string, error) {
+	log.Printf("[S4 IN] wav=%d", len(wav))
+
 	txt, err := s.stt.Recognize(ctx, wav)
-	log.Printf("[STT][OUT] txt=%.40s err=%v", txt, err)
-	return txt, err
+
+	log.Printf("[S4 INSIDE] rawTxt=%q err=%v", txt, err)
+	if err != nil {
+		return "", fmt.Errorf("[S4 OUT] stt err: %w", err)
+	}
+
+	txt = strings.TrimSpace(txt)
+	log.Printf("[S4 OUT] txt=%q", txt)
+	return txt, nil
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// ОРКЕСТР
-////////////////////////////////////////////////////////////////////////////////
+// -----------------------------
+// ОРКЕСТР — пока жив контекст, циклимся
+// -----------------------------
 
-func (s *AgressiveMediaService) Process(ctx context.Context, url, roomID string) (*models.Media, error) {
+func (s *AggressiveMediaService) ProcessMedia(ctx context.Context, srcURL, mediaType, roomID string) (*models.Media, error) {
+	log.Printf("[MEDIA AGGR IN] srcURL=%s mediaType=%s roomID=%s", srcURL, mediaType, roomID)
 
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
-		SourceURL: url,
-		Type:      "audio",
+		SourceURL: srcURL,
+		Type:      mediaType,
 	})
 	if err != nil {
-		return nil, err
-	}
-
-	// RESOLVE
-	resolved, err := s.RESOLVE(ctx, url)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("[MEDIA AGGR OUT] insert media err: %w", err)
 	}
 
 	go func() {
-		chunk := 1
+		chunkNum := 1
 
 		for {
 			select {
 			case <-ctx.Done():
+				log.Printf("[MEDIA AGGR INSIDE] ctx done, stop loop")
 				return
 
 			default:
-				// СТАНЦИЯ PCM_ONESHOT
-				pcm, err := s.PCM_ONESHOT(ctx, resolved)
-				if err != nil {
-					log.Printf("[ORCH][ERR] PCM_ONESHOT: %v", err)
-					return
-				}
+				log.Printf("[MEDIA AGGR INSIDE] loop chunk=%d", chunkNum)
 
-				// WAV
-				wav := s.WAV(pcm)
-
-				// STT
-				txt, err := s.STT(ctx, wav)
+				// S1: page URL → audio URL
+				audioURL, err := s.stationResolveURL(ctx, srcURL)
 				if err != nil {
-					chunk++
+					log.Printf("[MEDIA AGGR] S1 err: %v", err)
 					continue
 				}
 
-				txt = strings.TrimSpace(txt)
+				// S2: audio URL → PCM-кусок
+				pcm, err := s.stationGrabPCM(ctx, audioURL)
+				if err != nil {
+					log.Printf("[MEDIA AGGR] S2 err: %v", err)
+					continue
+				}
+				if len(pcm) == 0 {
+					log.Printf("[MEDIA AGGR] S2 got EMPTY PCM chunk=%d", chunkNum)
+					chunkNum++
+					continue
+				}
+
+				// S3: PCM → WAV
+				wav := s.stationPCMtoWAV(pcm)
+
+				// S4: WAV → текст
+				txt, err := s.stationSTT(ctx, wav)
+				if err != nil {
+					log.Printf("[MEDIA AGGR] S4 err: %v", err)
+					chunkNum++
+					continue
+				}
 				if txt == "" {
-					chunk++
+					log.Printf("[MEDIA AGGR] S4 empty text chunk=%d", chunkNum)
+					chunkNum++
 					continue
 				}
 
-				s.repo.InsertChunk(ctx, &models.MediaChunk{
+				// Сохраняем
+				err = s.repo.InsertChunk(ctx, &models.MediaChunk{
 					MediaID:     media.ID,
-					ChunkNumber: chunk,
+					ChunkNumber: chunkNum,
 					Text:        txt,
 				})
+				if err != nil {
+					log.Printf("[MEDIA AGGR] insert chunk err: %v", err)
+				}
 
+				log.Printf("[MEDIA AGGR OUT] chunk=%d text=%.80s", chunkNum, txt)
+
+				// в WS
 				s.events <- ports.ChunkEvent{
 					MediaID:     media.ID,
-					ChunkNumber: chunk,
+					ChunkNumber: chunkNum,
 					RoomID:      roomID,
 					Text:        txt,
 				}
 
-				chunk++
+				chunkNum++
 			}
 		}
 	}()
