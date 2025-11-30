@@ -205,12 +205,18 @@ func (s *AggressiveMediaService) stationSTT(ctx context.Context, wav []byte) (st
 // ОРКЕСТР — пока жив контекст, циклимся
 // -----------------------------
 
-func (s *AggressiveMediaService) ProcessMedia(ctx context.Context, srcURL, mediaType, roomID string) (*models.Media, error) {
-	log.Printf("[MEDIA AGGR IN] srcURL=%s mediaType=%s roomID=%s", srcURL, mediaType, roomID)
+func (s *AggressiveMediaService) Process(
+	ctx context.Context,
+	srcURL string,
+	roomID string,
+) (*models.Media, error) {
 
+	log.Printf("[MEDIA AGGR IN] srcURL=%s roomID=%s", srcURL, roomID)
+
+	// mediaType в интерфейсе отсутствует — жёстко ставим "audio"
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
 		SourceURL: srcURL,
-		Type:      mediaType,
+		Type:      "audio",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("[MEDIA AGGR OUT] insert media err: %w", err)
@@ -275,7 +281,6 @@ func (s *AggressiveMediaService) ProcessMedia(ctx context.Context, srcURL, media
 
 				log.Printf("[MEDIA AGGR OUT] chunk=%d text=%.80s", chunkNum, txt)
 
-				// в WS
 				s.events <- ports.ChunkEvent{
 					MediaID:     media.ID,
 					ChunkNumber: chunkNum,

@@ -64,7 +64,7 @@ func main() {
 	stt := infra.NewYandexSTTService()
 
 	// Важное: выбираем КОНСЕРВАТИВНУЮ версию
-	mediaService := domain.NewAgressiveMediaService(mediaRepo, stt)
+	mediaService := domain.NewAggressiveMediaService(mediaRepo, stt)
 
 	// WS HUB
 	hub := ws.NewHub()
