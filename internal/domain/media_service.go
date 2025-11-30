@@ -30,15 +30,46 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 	return s.events
 }
 
-func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.ReadCloser, error) {
-	log.Printf("[FFMPEG] start stream url=%s", url)
+// --------------------------
+// СТАНЦИЯ 0 — RESOLVE URL
+// --------------------------
+func (s *MediaService) station0_resolveURL(ctx context.Context, src string) (string, error) {
+	log.Printf("[S0 IN]     url=%s", src)
+	log.Printf("[S0 STEP]   yt-dlp resolve")
+
+	const yt = "/usr/local/bin/yt-dlp"
+	args := []string{"-f", "140", "--no-playlist", "-g", src}
+
+	out, err := exec.CommandContext(ctx, yt, args...).CombinedOutput()
+	res := strings.TrimSpace(string(out))
+
+	if err != nil {
+		log.Printf("[S0 ERR]    yt-dlp failed: %v (%s)", err, res)
+		return "", fmt.Errorf("resolve: %w", err)
+	}
+
+	if res == "" || !strings.HasPrefix(res, "http") || !strings.Contains(res, "videoplayback") {
+		log.Printf("[S0 ERR]    invalid resolved url: %q", res)
+		return "", fmt.Errorf("resolve invalid")
+	}
+
+	log.Printf("[S0 OUT]    direct=%s", res)
+	return res, nil
+}
+
+// --------------------------
+// СТАНЦИЯ 1 — START PCM STREAM
+// --------------------------
+func (s *MediaService) station1_startPCM(ctx context.Context, directURL string) (io.ReadCloser, error) {
+	log.Printf("[S1 IN]     direct=%s", directURL)
+	log.Printf("[S1 STEP]   spawning ffmpeg")
 
 	cmd := exec.CommandContext(
 		ctx,
 		"ffmpeg",
 		"-re",
 		"-seekable", "0",
-		"-i", url,
+		"-i", directURL,
 		"-vn",
 		"-ac", "1",
 		"-ar", "16000",
@@ -48,29 +79,75 @@ func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.Re
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		log.Printf("[S1 ERR]    %v", err)
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
+		log.Printf("[S1 ERR]    %v", err)
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	// ЛОГИРУЕМ ВСЁ STDERR
 	go func() {
-		buf, _ := io.ReadAll(stderr)
-		if len(buf) > 0 {
-			log.Printf("[FFMPEG STDERR] %s", buf)
+		slurp, _ := io.ReadAll(stderr)
+		if len(slurp) > 0 {
+			log.Printf("[S1 STEP]   ffmpeg-stderr: %s", slurp)
 		}
-		log.Printf("[FFMPEG] exited")
+		log.Printf("[S1 STEP]   ffmpeg exited")
 	}()
 
+	log.Printf("[S1 OUT]    pcm_stream_ready")
 	return stdout, nil
 }
 
+// --------------------------
+// СТАНЦИЯ 2 — READ PCM CHUNK
+// --------------------------
+func (s *MediaService) station2_readPCM(stream io.Reader, bytes int) ([]byte, error) {
+	log.Printf("[S2 IN]     want=%d", bytes)
+	log.Printf("[S2 STEP]   reading…")
+
+	buf := make([]byte, bytes)
+	n, err := io.ReadFull(stream, buf)
+	if err != nil {
+		log.Printf("[S2 ERR]    %v", err)
+		return nil, err
+	}
+
+	if n != bytes {
+		log.Printf("[S2 ERR]    short read: %d/%d", n, bytes)
+		return nil, fmt.Errorf("short read")
+	}
+
+	log.Printf("[S2 OUT]    chunk_ok (%d bytes)", n)
+	return buf, nil
+}
+
+// --------------------------
+// СТАНЦИЯ 3 — STT
+// --------------------------
+func (s *MediaService) station3_stt(ctx context.Context, pcm []byte) (string, error) {
+	log.Printf("[S3 IN]     pcm=%d bytes", len(pcm))
+	log.Printf("[S3 STEP]   calling STT")
+
+	txt, err := s.stt.Recognize(ctx, pcm)
+	if err != nil {
+		log.Printf("[S3 ERR]    %v", err)
+		return "", err
+	}
+
+	log.Printf("[S3 STEP]   raw=%.50s", txt)
+	log.Printf("[S3 OUT]    text_ok")
+
+	return txt, nil
+}
+
+// --------------------------
+// ОРКЕСТР
+// --------------------------
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error) {
-	log.Printf("[MEDIA] PTRP start url=%s", sourceURL)
 
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
 		SourceURL: sourceURL,
@@ -80,69 +157,55 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		return nil, err
 	}
 
-	stream, err := s.continuousCapture(ctx, sourceURL)
+	// S0
+	directURL, err := s.station0_resolveURL(ctx, sourceURL)
 	if err != nil {
-		return nil, fmt.Errorf("capture error: %w", err)
+		return nil, err
+	}
+
+	// S1
+	stream, err := s.station1_startPCM(ctx, directURL)
+	if err != nil {
+		return nil, err
 	}
 
 	go func() {
-		defer func() {
-			log.Printf("[MEDIA] closing stream")
-			stream.Close()
-		}()
+		defer stream.Close()
 
 		const chunkBytes = 160000
-		buf := make([]byte, chunkBytes)
 		chunkNum := 1
 
 		for {
 			select {
 			case <-ctx.Done():
-				log.Printf("[MEDIA] ctx.Done stop PTRP")
+				log.Printf("[CTX] stop")
 				return
 
 			default:
-				log.Printf("[MEDIA] reading chunk=%d", chunkNum)
-
-				n, err := io.ReadFull(stream, buf)
+				// S2
+				pcm, err := s.station2_readPCM(stream, chunkBytes)
 				if err != nil {
-					log.Printf("[MEDIA] readFull err: %v", err)
 					return
 				}
 
-				if n != chunkBytes {
-					log.Printf("[MEDIA] WARNING short chunk read: %d/%d", n, chunkBytes)
-				}
-
-				log.Printf("[MEDIA] chunk=%d read OK, sending to STT", chunkNum)
-
-				// CALL STT
-				txt, err := s.stt.Recognize(ctx, buf)
+				// S3
+				txt, err := s.station3_stt(ctx, pcm)
 				if err != nil {
-					log.Printf("[MEDIA] STT err chunk=%d: %v", chunkNum, err)
 					chunkNum++
 					continue
 				}
-
-				log.Printf("[MEDIA] STT result chunk=%d: %.50s", chunkNum, txt)
 
 				txt = strings.TrimSpace(txt)
 				if txt == "" {
-					log.Printf("[MEDIA] empty text chunk=%d", chunkNum)
 					chunkNum++
 					continue
 				}
 
-				err = s.repo.InsertChunk(ctx, &models.MediaChunk{
+				s.repo.InsertChunk(ctx, &models.MediaChunk{
 					MediaID:     media.ID,
 					ChunkNumber: chunkNum,
 					Text:        txt,
 				})
-				if err != nil {
-					log.Printf("[MEDIA] DB insert err chunk=%d: %v", chunkNum, err)
-				}
-
-				log.Printf("[MEDIA] SEND chunk=%d text=%s", chunkNum, txt)
 
 				s.events <- ports.ChunkEvent{
 					MediaID:     media.ID,
