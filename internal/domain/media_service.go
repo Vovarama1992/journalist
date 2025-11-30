@@ -2,7 +2,6 @@ package domain
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -31,9 +30,8 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 	return s.events
 }
 
-// FFmpeg → PCM stream
 func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.ReadCloser, error) {
-	log.Printf("[stream] continuousCapture START url=%.80s", url)
+	log.Printf("[FFMPEG] start stream url=%s", url)
 
 	cmd := exec.CommandContext(
 		ctx,
@@ -59,47 +57,20 @@ func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.Re
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
+	// ЛОГИРУЕМ ВСЁ STDERR
 	go func() {
-		errLog, _ := io.ReadAll(stderr)
-		if len(errLog) > 0 {
-			log.Printf("[stream] ffmpeg stderr: %s", errLog)
+		buf, _ := io.ReadAll(stderr)
+		if len(buf) > 0 {
+			log.Printf("[FFMPEG STDERR] %s", buf)
 		}
-		log.Printf("[stream] ffmpeg finished")
+		log.Printf("[FFMPEG] exited")
 	}()
 
 	return stdout, nil
 }
 
-// PCM → WAV (добавляем WAV-хедер)
-func pcmToWav(pcm []byte) ([]byte, error) {
-	dataSize := uint32(len(pcm))
-	riffSize := 36 + dataSize
-
-	buf := make([]byte, 44+len(pcm))
-
-	copy(buf[0:], []byte("RIFF"))
-	binary.LittleEndian.PutUint32(buf[4:], riffSize)
-	copy(buf[8:], []byte("WAVE"))
-
-	copy(buf[12:], []byte("fmt "))
-	binary.LittleEndian.PutUint32(buf[16:], 16)      // PCM header size
-	binary.LittleEndian.PutUint16(buf[20:], 1)       // PCM = 1
-	binary.LittleEndian.PutUint16(buf[22:], 1)       // channels = 1
-	binary.LittleEndian.PutUint32(buf[24:], 16000)   // sample rate
-	binary.LittleEndian.PutUint32(buf[28:], 16000*2) // byte rate
-	binary.LittleEndian.PutUint16(buf[32:], 2)       // block align
-	binary.LittleEndian.PutUint16(buf[34:], 16)      // bits per sample
-
-	copy(buf[36:], []byte("data"))
-	binary.LittleEndian.PutUint32(buf[40:], dataSize)
-
-	copy(buf[44:], pcm)
-
-	return buf, nil
-}
-
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error) {
-	log.Printf("[media] start PTRP: %.60s…", sourceURL)
+	log.Printf("[MEDIA] PTRP start url=%s", sourceURL)
 
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
 		SourceURL: sourceURL,
@@ -111,11 +82,14 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 
 	stream, err := s.continuousCapture(ctx, sourceURL)
 	if err != nil {
-		return nil, fmt.Errorf("continuousCapture: %w", err)
+		return nil, fmt.Errorf("capture error: %w", err)
 	}
 
 	go func() {
-		defer stream.Close()
+		defer func() {
+			log.Printf("[MEDIA] closing stream")
+			stream.Close()
+		}()
 
 		const chunkBytes = 160000
 		buf := make([]byte, chunkBytes)
@@ -124,50 +98,51 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		for {
 			select {
 			case <-ctx.Done():
-				log.Printf("[media] ctx done — stop PTRP")
+				log.Printf("[MEDIA] ctx.Done stop PTRP")
 				return
 
 			default:
+				log.Printf("[MEDIA] reading chunk=%d", chunkNum)
+
 				n, err := io.ReadFull(stream, buf)
 				if err != nil {
-					log.Printf("[media] readFull err: %v", err)
+					log.Printf("[MEDIA] readFull err: %v", err)
 					return
 				}
-				if n < chunkBytes {
-					log.Printf("[media] short read %d bytes", n)
-					continue
+
+				if n != chunkBytes {
+					log.Printf("[MEDIA] WARNING short chunk read: %d/%d", n, chunkBytes)
 				}
 
-				// *** ВСТАВЛЕННАЯ СТАНЦИЯ PCM → WAV ***
-				wav, err := pcmToWav(buf)
+				log.Printf("[MEDIA] chunk=%d read OK, sending to STT", chunkNum)
+
+				// CALL STT
+				txt, err := s.stt.Recognize(ctx, buf)
 				if err != nil {
-					log.Printf("[media] pcmToWav err chunk=%d: %v", chunkNum, err)
+					log.Printf("[MEDIA] STT err chunk=%d: %v", chunkNum, err)
 					chunkNum++
 					continue
 				}
 
-				// WAV → STT
-				txt, err := s.stt.Recognize(ctx, wav)
-				if err != nil {
-					log.Printf("[media] STT err chunk=%d: %v", chunkNum, err)
-					chunkNum++
-					continue
-				}
+				log.Printf("[MEDIA] STT result chunk=%d: %.50s", chunkNum, txt)
 
 				txt = strings.TrimSpace(txt)
 				if txt == "" {
-					log.Printf("[media] empty text chunk=%d", chunkNum)
+					log.Printf("[MEDIA] empty text chunk=%d", chunkNum)
 					chunkNum++
 					continue
 				}
 
-				_ = s.repo.InsertChunk(ctx, &models.MediaChunk{
+				err = s.repo.InsertChunk(ctx, &models.MediaChunk{
 					MediaID:     media.ID,
 					ChunkNumber: chunkNum,
 					Text:        txt,
 				})
+				if err != nil {
+					log.Printf("[MEDIA] DB insert err chunk=%d: %v", chunkNum, err)
+				}
 
-				log.Printf("[media] SEND chunk=%d media=%d: %.40s", chunkNum, media.ID, txt)
+				log.Printf("[MEDIA] SEND chunk=%d text=%s", chunkNum, txt)
 
 				s.events <- ports.ChunkEvent{
 					MediaID:     media.ID,

@@ -64,8 +64,6 @@ func main() {
 	stt := infra.NewYandexSTTService()
 	mediaService := domain.NewMediaService(mediaRepo, stt)
 
-	streamService := domain.NewStreamService(zl)
-
 	// WS HUB
 	hub := ws.NewHub()
 
@@ -93,7 +91,6 @@ func main() {
 
 	// HANDLERS
 	authHandler := delivery.NewAuthHandler(authService, zl)
-	streamHandler := delivery.NewStreamHandler(zl, streamService)
 
 	// ROUTER
 	r := chi.NewRouter()
@@ -105,7 +102,7 @@ func main() {
 		AllowCredentials: true,
 	}))
 
-	delivery.RegisterRoutes(r, authHandler, streamHandler, authService)
+	delivery.RegisterRoutes(r, authHandler, authService)
 
 	r.Get("/ws", ws.WSHandler(hub, mediaService))
 
