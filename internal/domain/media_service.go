@@ -39,7 +39,7 @@ func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (str
 
 	if strings.Contains(raw, "youtube.com") || strings.Contains(raw, "youtu.be") {
 
-		try := func(format string) (string, error) {
+		extract := func(format string) (string, error) {
 			out, err := exec.CommandContext(
 				ctx,
 				"yt-dlp",
@@ -56,28 +56,33 @@ func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (str
 				return "", err
 			}
 
-			url := strings.TrimSpace(string(out))
-			if !strings.HasPrefix(url, "http") {
-				return "", fmt.Errorf("invalid out: %q", url)
+			// Берём последнюю строку (это и есть URL)
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			last := strings.TrimSpace(lines[len(lines)-1])
+
+			if !strings.HasPrefix(last, "http") {
+				return "", fmt.Errorf("invalid url line: %q", last)
 			}
+
+			return last, nil
+		}
+
+		// 1) сначала пробуем bestaudio
+		if url, err := extract("bestaudio"); err == nil {
+			log.Printf("[RESOLVE][OUT] bestaudio=%s", url)
 			return url, nil
 		}
 
-		// 1) пробуем bestaudio
-		if url, err := try("bestaudio"); err == nil {
-			log.Printf("[RESOLVE][OUT] resolved=%s", url)
-			return url, nil
-		}
-
-		// 2) fallback: best (видео+аудио)
-		if url, err := try("best"); err == nil {
-			log.Printf("[RESOLVE][OUT] fallback best=%s", url)
+		// 2) fallback: best (даёт HLS)
+		if url, err := extract("best"); err == nil {
+			log.Printf("[RESOLVE][OUT] best=%s", url)
 			return url, nil
 		}
 
 		return "", fmt.Errorf("yt-dlp failed for all formats")
 	}
 
+	// прямой медиафайл
 	log.Printf("[RESOLVE][OUT] passthrough=%s", raw)
 	return raw, nil
 }
