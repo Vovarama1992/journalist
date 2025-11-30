@@ -183,9 +183,15 @@ func (s *AggressiveMediaService) stationPCMtoWAV(pcm []byte) []byte {
 func (s *AggressiveMediaService) stationSTT(ctx context.Context, wav []byte) (string, error) {
 	log.Printf("[S4 IN] wav=%d", len(wav))
 
-	txt, err := s.stt.Recognize(ctx, wav)
+	txt, raw, err := s.stt.Recognize(ctx, wav)
 
-	log.Printf("[S4 INSIDE] rawTxt=%q err=%v", txt, err)
+	// полный сырой ответ Яндекса
+	if len(raw) > 0 {
+		log.Printf("[S4 RAW YANDEX] %s", raw)
+	}
+
+	log.Printf("[S4 INSIDE] txt=%q err=%v", txt, err)
+
 	if err != nil {
 		return "", fmt.Errorf("[S4 OUT] stt err: %w", err)
 	}

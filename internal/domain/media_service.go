@@ -191,8 +191,15 @@ func (s *ConservativeMediaService) WAV(pcm []byte) []byte {
 
 func (s *ConservativeMediaService) STT(ctx context.Context, wav []byte) (string, error) {
 	log.Printf("[STT][IN] wav_len=%d", len(wav))
-	txt, err := s.stt.Recognize(ctx, wav)
+
+	txt, raw, err := s.stt.Recognize(ctx, wav)
+
+	if len(raw) > 0 {
+		log.Printf("[STT][RAW YANDEX] %s", raw)
+	}
+
 	log.Printf("[STT][OUT] txt=%.40s err=%v", txt, err)
+
 	return txt, err
 }
 

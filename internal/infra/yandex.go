@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 
@@ -23,26 +24,20 @@ func NewYandexSTTService() ports.STTService {
 	return &YandexSTTService{apiKey: key}
 }
 
-type yandexRequest struct {
-	Lang string `json:"lang"`
-	// формат фиксированный: PCM 16kHz mono
-	// мы будем отдавать WAV сразу, оно подходит
-}
-
 type yandexResponse struct {
 	Result string `json:"result"`
 }
 
-func (s *YandexSTTService) Recognize(ctx context.Context, wav []byte) (string, error) {
-	reqBody := bytes.NewReader(wav)
-
-	req, err := http.NewRequestWithContext(ctx,
+// Новая сигнатура
+func (s *YandexSTTService) Recognize(ctx context.Context, wav []byte) (string, []byte, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
 		"POST",
 		"https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?lang=ru-RU",
-		reqBody,
+		bytes.NewReader(wav),
 	)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	req.Header.Set("Authorization", "Api-Key "+s.apiKey)
@@ -50,14 +45,19 @@ func (s *YandexSTTService) Recognize(ctx context.Context, wav []byte) (string, e
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("yandex stt request: %w", err)
+		return "", nil, fmt.Errorf("yandex stt request: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// читаем тело всегда, целиком
+	raw, _ := io.ReadAll(resp.Body)
+
+	// пробуем распарсить JSON
 	var r yandexResponse
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", fmt.Errorf("yandex stt decode: %w", err)
+	if err := json.Unmarshal(raw, &r); err != nil {
+		// JSON не распарсился — значит Яндекс вернул ошибку текстом
+		return "", raw, fmt.Errorf("yandex stt decode: %w", err)
 	}
 
-	return r.Result, nil
+	return r.Result, raw, nil
 }
