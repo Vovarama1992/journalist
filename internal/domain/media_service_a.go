@@ -176,6 +176,14 @@ func (s *AggressiveMediaService) stationPCMtoWAV(pcm []byte) []byte {
 	return wav
 }
 
+// S3b: WAV -> raw PCM (LPCM)
+func wavToPCM(wav []byte) ([]byte, error) {
+	if len(wav) < 44 {
+		return nil, fmt.Errorf("wav too small")
+	}
+	return wav[44:], nil
+}
+
 // -----------------------------
 // СТАНЦИЯ 4 — WAV → TEXT (Yandex STT)
 // -----------------------------

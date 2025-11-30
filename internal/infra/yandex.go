@@ -14,6 +14,7 @@ import (
 
 type YandexSTTService struct {
 	apiKey string
+	client *http.Client
 }
 
 func NewYandexSTTService() ports.STTService {
@@ -21,42 +22,42 @@ func NewYandexSTTService() ports.STTService {
 	if key == "" {
 		panic("YANDEX_SPEECHKIT_API_KEY not set")
 	}
-	return &YandexSTTService{apiKey: key}
+	return &YandexSTTService{
+		apiKey: key,
+		client: http.DefaultClient,
+	}
 }
 
 type yandexResponse struct {
 	Result string `json:"result"`
+	Error  string `json:"error_message"`
 }
 
-// Новая сигнатура
-func (s *YandexSTTService) Recognize(ctx context.Context, wav []byte) (string, []byte, error) {
-	req, err := http.NewRequestWithContext(
-		ctx,
-		"POST",
-		"https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?lang=ru-RU",
-		bytes.NewReader(wav),
-	)
+func (s *YandexSTTService) Recognize(ctx context.Context, pcm []byte) (string, []byte, error) {
+	url := "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize" +
+		"?lang=ru-RU&format=lpcm&sampleRateHertz=16000"
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(pcm))
 	if err != nil {
 		return "", nil, err
 	}
 
 	req.Header.Set("Authorization", "Api-Key "+s.apiKey)
-	req.Header.Set("Content-Type", "audio/wav")
+	req.Header.Set("Content-Type", "application/octet-stream")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("yandex stt request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// читаем тело всегда, целиком
 	raw, _ := io.ReadAll(resp.Body)
 
-	// пробуем распарсить JSON
 	var r yandexResponse
-	if err := json.Unmarshal(raw, &r); err != nil {
-		// JSON не распарсился — значит Яндекс вернул ошибку текстом
-		return "", raw, fmt.Errorf("yandex stt decode: %w", err)
+	_ = json.Unmarshal(raw, &r)
+
+	if r.Error != "" {
+		return "", raw, fmt.Errorf(r.Error)
 	}
 
 	return r.Result, raw, nil
