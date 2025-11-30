@@ -47,17 +47,17 @@ func (s *AggressiveMediaService) stationResolveURL(ctx context.Context, pageURL 
 	).CombinedOutput()
 
 	raw := strings.TrimSpace(string(out))
-	log.Printf("[S1 RESOLVE] raw=%q err=%v", raw, err)
+	log.Printf("[S1 RESOLVE RAW] %q err=%v", raw, err)
 
-	if err != nil {
-		return "", fmt.Errorf("yt-dlp failed: %w (%s)", err, raw)
+	// даже если yt-dlp выдал предупреждения — забираем последнюю строку
+	lines := strings.Split(raw, "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+
+	if !strings.HasPrefix(last, "http") {
+		return "", fmt.Errorf("invalid audio url: %q", last)
 	}
 
-	if raw == "" || !strings.HasPrefix(raw, "http") {
-		return "", fmt.Errorf("invalid audio url: %q", raw)
-	}
-
-	return raw, nil
+	return last, nil
 }
 
 // -----------------------------
