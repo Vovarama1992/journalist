@@ -35,22 +35,36 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 // --------------------------
 func (s *MediaService) station0_resolveURL(ctx context.Context, src string) (string, error) {
 	log.Printf("[S0 IN]     url=%s", src)
-	log.Printf("[S0 STEP]   yt-dlp resolve")
+
+	// 1) если НЕ youtube — возвращаем как есть
+	if !strings.Contains(src, "youtube.com") && !strings.Contains(src, "youtu.be") {
+		log.Printf("[S0 STEP]   non-youtube url → pass directly")
+		log.Printf("[S0 OUT]    direct=%s", src)
+		return src, nil
+	}
+
+	// 2) youtube → yt-dlp bestaudio
+	log.Printf("[S0 STEP]   youtube detected → yt-dlp bestaudio")
 
 	const yt = "/usr/local/bin/yt-dlp"
-	args := []string{"-f", "140", "--no-playlist", "-g", src}
+	args := []string{
+		"-f", "bestaudio/best", // универсально
+		"--no-playlist",
+		"-g",
+		src,
+	}
 
 	out, err := exec.CommandContext(ctx, yt, args...).CombinedOutput()
 	res := strings.TrimSpace(string(out))
 
 	if err != nil {
-		log.Printf("[S0 ERR]    yt-dlp failed: %v (%s)", err, res)
-		return "", fmt.Errorf("resolve: %w", err)
+		log.Printf("[S0 ERR]    yt-dlp: %v (%s)", err, res)
+		return "", fmt.Errorf("resolve youtube: %w", err)
 	}
 
-	if res == "" || !strings.HasPrefix(res, "http") || !strings.Contains(res, "videoplayback") {
-		log.Printf("[S0 ERR]    invalid resolved url: %q", res)
-		return "", fmt.Errorf("resolve invalid")
+	if res == "" || !strings.HasPrefix(res, "http") {
+		log.Printf("[S0 ERR]    invalid result: %q", res)
+		return "", fmt.Errorf("resolve: invalid output")
 	}
 
 	log.Printf("[S0 OUT]    direct=%s", res)
