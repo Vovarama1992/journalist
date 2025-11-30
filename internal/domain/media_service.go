@@ -34,41 +34,45 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 // СТАНЦИЯ 0 — RESOLVE URL
 // --------------------------
 func (s *MediaService) station0_resolveURL(ctx context.Context, src string) (string, error) {
-	log.Printf("[S0 IN]     url=%s", src)
+	log.Printf("[S0 IN] %s", src)
 
-	// 1) если НЕ youtube — возвращаем как есть
+	// non-youtube → просто вернуть
 	if !strings.Contains(src, "youtube.com") && !strings.Contains(src, "youtu.be") {
-		log.Printf("[S0 STEP]   non-youtube url → pass directly")
-		log.Printf("[S0 OUT]    direct=%s", src)
+		log.Printf("[S0 OUT] direct=%s", src)
 		return src, nil
 	}
 
-	// 2) youtube → yt-dlp bestaudio
-	log.Printf("[S0 STEP]   youtube detected → yt-dlp bestaudio")
+	log.Printf("[S0 STEP] yt-dlp resolving")
 
-	const yt = "/usr/local/bin/yt-dlp"
-	args := []string{
-		"-f", "bestaudio/best", // универсально
-		"--no-playlist",
-		"-g",
-		src,
-	}
+	const bin = "/usr/local/bin/yt-dlp"
+	args := []string{"-f", "bestaudio/best", "--no-playlist", "-g", src}
 
-	out, err := exec.CommandContext(ctx, yt, args...).CombinedOutput()
-	res := strings.TrimSpace(string(out))
+	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
+	full := string(out)
 
 	if err != nil {
-		log.Printf("[S0 ERR]    yt-dlp: %v (%s)", err, res)
-		return "", fmt.Errorf("resolve youtube: %w", err)
+		// даже при exit!=0 мог быть рабочий URL
+		log.Printf("[S0 WARN] yt-dlp exit=%v (will parse anyway)", err)
 	}
 
-	if res == "" || !strings.HasPrefix(res, "http") {
-		log.Printf("[S0 ERR]    invalid result: %q", res)
-		return "", fmt.Errorf("resolve: invalid output")
+	// разбираем построчно
+	lines := strings.Split(full, "\n")
+	var url string
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(l, "http") {
+			url = l
+			break
+		}
 	}
 
-	log.Printf("[S0 OUT]    direct=%s", res)
-	return res, nil
+	if url == "" {
+		log.Printf("[S0 ERR] no http url in output: %q", full)
+		return "", fmt.Errorf("resolve: no usable url")
+	}
+
+	log.Printf("[S0 OUT] %s", url)
+	return url, nil
 }
 
 // --------------------------
