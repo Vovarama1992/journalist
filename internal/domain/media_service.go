@@ -30,14 +30,60 @@ func (s *ConservativeMediaService) Events() <-chan ports.ChunkEvent {
 	return s.events
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// СТАНЦИЯ 0 — RESOLVE
+////////////////////////////////////////////////////////////////////////////////
+
+func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (string, error) {
+	log.Printf("[RESOLVE][IN] raw=%s", raw)
+
+	// YouTube detection
+	if strings.Contains(raw, "youtube.com") || strings.Contains(raw, "youtu.be") {
+
+		cmd := exec.CommandContext(ctx,
+			"/usr/local/bin/yt-dlp",
+			"-f", "140",
+			"--no-playlist",
+			"-g",
+			raw,
+		)
+
+		out, err := cmd.CombinedOutput()
+		log.Printf("[RESOLVE][INSIDE] yt-dlp out=%q err=%v", out, err)
+
+		if err != nil {
+			return "", fmt.Errorf("yt-dlp: %w", err)
+		}
+
+		url := strings.TrimSpace(string(out))
+		if !strings.HasPrefix(url, "http") {
+			return "", fmt.Errorf("resolve failed: bad output %q", url)
+		}
+		if !strings.Contains(url, "videoplayback") {
+			return "", fmt.Errorf("resolve failed: not direct audio link %q", url)
+		}
+
+		log.Printf("[RESOLVE][OUT] resolved=%s", url)
+		return url, nil
+	}
+
+	// Not YouTube
+	log.Printf("[RESOLVE][OUT] passthrough=%s", raw)
+	return raw, nil
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // СТАНЦИЯ 1 — PCM_START
+////////////////////////////////////////////////////////////////////////////////
+
 func (s *ConservativeMediaService) PCM_START(ctx context.Context, url string) (io.ReadCloser, error) {
 	log.Printf("[PCM_START][IN] url=%s", url)
 
 	cmd := exec.CommandContext(ctx,
 		"ffmpeg", "-re", "-seekable", "0",
 		"-i", url,
-		"-vn", "-ac", "1", "-ar", "16000",
+		"-vn",
+		"-ac", "1", "-ar", "16000",
 		"-f", "s16le", "pipe:1",
 	)
 
@@ -52,7 +98,6 @@ func (s *ConservativeMediaService) PCM_START(ctx context.Context, url string) (i
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	// INSIDE
 	go func() {
 		errbuf, _ := io.ReadAll(stderr)
 		if len(errbuf) > 0 {
@@ -65,7 +110,10 @@ func (s *ConservativeMediaService) PCM_START(ctx context.Context, url string) (i
 	return stdout, nil
 }
 
+////////////////////////////////////////////////////////////////////////////////
 // СТАНЦИЯ 2 — CUT
+////////////////////////////////////////////////////////////////////////////////
+
 func (s *ConservativeMediaService) CUT(r io.Reader) ([]byte, error) {
 	log.Printf("[CUT][IN] reading pcm chunk")
 
@@ -83,7 +131,10 @@ func (s *ConservativeMediaService) CUT(r io.Reader) ([]byte, error) {
 	return buf, nil
 }
 
-// СТАНЦИЯ 3 — WAV
+////////////////////////////////////////////////////////////////////////////////
+// СТАНЦИЯ 3 — WAV (заглушка)
+////////////////////////////////////////////////////////////////////////////////
+
 func (s *ConservativeMediaService) WAV(pcm []byte) []byte {
 	log.Printf("[WAV][IN] pcm_len=%d", len(pcm))
 	log.Printf("[WAV][INSIDE] passing pcm directly")
@@ -91,7 +142,10 @@ func (s *ConservativeMediaService) WAV(pcm []byte) []byte {
 	return pcm
 }
 
+////////////////////////////////////////////////////////////////////////////////
 // СТАНЦИЯ 4 — STT
+////////////////////////////////////////////////////////////////////////////////
+
 func (s *ConservativeMediaService) STT(ctx context.Context, wav []byte) (string, error) {
 	log.Printf("[STT][IN] wav_len=%d", len(wav))
 	txt, err := s.stt.Recognize(ctx, wav)
@@ -99,15 +153,28 @@ func (s *ConservativeMediaService) STT(ctx context.Context, wav []byte) (string,
 	return txt, err
 }
 
+////////////////////////////////////////////////////////////////////////////////
 // ОРКЕСТР
+////////////////////////////////////////////////////////////////////////////////
+
 func (s *ConservativeMediaService) Process(ctx context.Context, url, roomID string) (*models.Media, error) {
 
-	media, err := s.repo.InsertMedia(ctx, &models.Media{SourceURL: url, Type: "audio"})
+	media, err := s.repo.InsertMedia(ctx, &models.Media{
+		SourceURL: url,
+		Type:      "audio",
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	stream, err := s.PCM_START(ctx, url)
+	// СТАНЦИЯ 0
+	resolved, err := s.RESOLVE(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+
+	// СТАНЦИЯ 1
+	stream, err := s.PCM_START(ctx, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -122,14 +189,17 @@ func (s *ConservativeMediaService) Process(ctx context.Context, url, roomID stri
 				return
 
 			default:
+				// CUT
 				pcm, err := s.CUT(stream)
 				if err != nil {
 					log.Printf("[ORCH][ERR] CUT: %v", err)
 					return
 				}
 
+				// WAV
 				wav := s.WAV(pcm)
 
+				// STT
 				txt, err := s.STT(ctx, wav)
 				if err != nil {
 					chunk++
@@ -142,12 +212,14 @@ func (s *ConservativeMediaService) Process(ctx context.Context, url, roomID stri
 					continue
 				}
 
+				// save
 				s.repo.InsertChunk(ctx, &models.MediaChunk{
 					MediaID:     media.ID,
 					ChunkNumber: chunk,
 					Text:        txt,
 				})
 
+				// ws out
 				s.events <- ports.ChunkEvent{
 					MediaID:     media.ID,
 					ChunkNumber: chunk,
