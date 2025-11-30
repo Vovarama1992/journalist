@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -56,7 +57,6 @@ func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (str
 				return "", err
 			}
 
-			// Берём последнюю строку (это и есть URL)
 			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 			last := strings.TrimSpace(lines[len(lines)-1])
 
@@ -67,13 +67,11 @@ func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (str
 			return last, nil
 		}
 
-		// 1) сначала пробуем bestaudio
 		if url, err := extract("bestaudio"); err == nil {
 			log.Printf("[RESOLVE][OUT] bestaudio=%s", url)
 			return url, nil
 		}
 
-		// 2) fallback: best (даёт HLS)
 		if url, err := extract("best"); err == nil {
 			log.Printf("[RESOLVE][OUT] best=%s", url)
 			return url, nil
@@ -82,7 +80,6 @@ func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (str
 		return "", fmt.Errorf("yt-dlp failed for all formats")
 	}
 
-	// прямой медиафайл
 	log.Printf("[RESOLVE][OUT] passthrough=%s", raw)
 	return raw, nil
 }
@@ -147,14 +144,45 @@ func (s *ConservativeMediaService) CUT(r io.Reader) ([]byte, error) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// СТАНЦИЯ 3 — WAV (заглушка)
+// СТАНЦИЯ 3 — WAV (нормальная, не заглушка)
 ////////////////////////////////////////////////////////////////////////////////
 
 func (s *ConservativeMediaService) WAV(pcm []byte) []byte {
 	log.Printf("[WAV][IN] pcm_len=%d", len(pcm))
-	log.Printf("[WAV][INSIDE] passing pcm directly")
-	log.Printf("[WAV][OUT] wav_len=%d", len(pcm))
-	return pcm
+
+	const (
+		sampleRate    = 16000
+		bitsPerSample = 16
+		channels      = 1
+	)
+
+	byteRate := sampleRate * channels * (bitsPerSample / 8)
+	blockAlign := channels * (bitsPerSample / 8)
+	dataSize := len(pcm)
+	riffSize := 36 + dataSize
+
+	header := make([]byte, 44)
+
+	copy(header[0:], []byte("RIFF"))
+	binary.LittleEndian.PutUint32(header[4:], uint32(riffSize))
+	copy(header[8:], []byte("WAVE"))
+
+	copy(header[12:], []byte("fmt "))
+	binary.LittleEndian.PutUint32(header[16:], 16)
+	binary.LittleEndian.PutUint16(header[20:], 1)
+	binary.LittleEndian.PutUint16(header[22:], channels)
+	binary.LittleEndian.PutUint32(header[24:], sampleRate)
+	binary.LittleEndian.PutUint32(header[28:], uint32(byteRate))
+	binary.LittleEndian.PutUint16(header[32:], uint16(blockAlign))
+	binary.LittleEndian.PutUint16(header[34:], bitsPerSample)
+
+	copy(header[36:], []byte("data"))
+	binary.LittleEndian.PutUint32(header[40:], uint32(dataSize))
+
+	wav := append(header, pcm...)
+
+	log.Printf("[WAV][OUT] wav_len=%d", len(wav))
+	return wav
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -182,13 +210,11 @@ func (s *ConservativeMediaService) Process(ctx context.Context, url, roomID stri
 		return nil, err
 	}
 
-	// СТАНЦИЯ 0
 	resolved, err := s.RESOLVE(ctx, url)
 	if err != nil {
 		return nil, err
 	}
 
-	// СТАНЦИЯ 1
 	stream, err := s.PCM_START(ctx, resolved)
 	if err != nil {
 		return nil, err
@@ -204,17 +230,14 @@ func (s *ConservativeMediaService) Process(ctx context.Context, url, roomID stri
 				return
 
 			default:
-				// CUT
 				pcm, err := s.CUT(stream)
 				if err != nil {
 					log.Printf("[ORCH][ERR] CUT: %v", err)
 					return
 				}
 
-				// WAV
 				wav := s.WAV(pcm)
 
-				// STT
 				txt, err := s.STT(ctx, wav)
 				if err != nil {
 					chunk++
@@ -227,14 +250,12 @@ func (s *ConservativeMediaService) Process(ctx context.Context, url, roomID stri
 					continue
 				}
 
-				// save
 				s.repo.InsertChunk(ctx, &models.MediaChunk{
 					MediaID:     media.ID,
 					ChunkNumber: chunk,
 					Text:        txt,
 				})
 
-				// ws out
 				s.events <- ports.ChunkEvent{
 					MediaID:     media.ID,
 					ChunkNumber: chunk,
