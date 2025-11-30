@@ -16,23 +16,26 @@ RUN apt update && \
     apt install -y curl ffmpeg ca-certificates python3 python3-pip xz-utils && \
     apt clean
 
-# --- ставим Node.js СНАЧАЛА ---
+# --- ставим Node.js ---
 RUN curl -fsSL https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz -o node.tar.xz && \
     tar -xJf node.tar.xz && \
     mv node-v20.11.1-linux-x64 /usr/local/node && \
-    ln -s /usr/local/node/bin/node /usr/local/bin/node && \
-    ln -s /usr/local/node/bin/npm /usr/local/bin/npm && \
     rm node.tar.xz
 
-# проверка что node доступен
+# критично: прописываем node в PATH (иначе yt-dlp его НЕ видит)
+ENV PATH="/usr/local/node/bin:${PATH}"
+
+# проверка что node работает
 RUN node -v
 
-# --- теперь ставим yt-dlp ---
+# --- устанавливаем yt-dlp ---
 RUN pip3 install --break-system-packages yt-dlp
 
 WORKDIR /app
 COPY --from=builder /app/server /app/server
 
 EXPOSE 8080
+
 RUN which node && node -v && which yt-dlp && yt-dlp --version
+
 CMD ["/app/server"]

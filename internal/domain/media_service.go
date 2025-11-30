@@ -37,13 +37,14 @@ func (s *ConservativeMediaService) Events() <-chan ports.ChunkEvent {
 func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (string, error) {
 	log.Printf("[RESOLVE][IN] raw=%s", raw)
 
-	// если YouTube
+	// YouTube
 	if strings.Contains(raw, "youtube.com") || strings.Contains(raw, "youtu.be") {
 
 		out, err := exec.CommandContext(
 			ctx,
 			"yt-dlp",
 			"-f", "bestaudio",
+			"--extractor-args", "youtube:player_client=default",
 			"--no-playlist",
 			"-g",
 			raw,
@@ -64,7 +65,7 @@ func (s *ConservativeMediaService) RESOLVE(ctx context.Context, raw string) (str
 		return url, nil
 	}
 
-	// если НЕ YouTube — возвращаем как есть
+	// Прямой медиафайл → пропускаем
 	log.Printf("[RESOLVE][OUT] passthrough=%s", raw)
 	return raw, nil
 }
