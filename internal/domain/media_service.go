@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +31,7 @@ func (s *MediaService) Events() <-chan ports.ChunkEvent {
 	return s.events
 }
 
+// FFmpeg → PCM stream
 func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.ReadCloser, error) {
 	log.Printf("[stream] continuousCapture START url=%.80s", url)
 
@@ -57,7 +59,6 @@ func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.Re
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	// логируем stderr в фоне
 	go func() {
 		errLog, _ := io.ReadAll(stderr)
 		if len(errLog) > 0 {
@@ -69,12 +70,37 @@ func (s *MediaService) continuousCapture(ctx context.Context, url string) (io.Re
 	return stdout, nil
 }
 
-// ProcessMedia — запускает поток ffmpeg → режет каждые 5 секунд → STT → WS.
+// PCM → WAV (добавляем WAV-хедер)
+func pcmToWav(pcm []byte) ([]byte, error) {
+	dataSize := uint32(len(pcm))
+	riffSize := 36 + dataSize
+
+	buf := make([]byte, 44+len(pcm))
+
+	copy(buf[0:], []byte("RIFF"))
+	binary.LittleEndian.PutUint32(buf[4:], riffSize)
+	copy(buf[8:], []byte("WAVE"))
+
+	copy(buf[12:], []byte("fmt "))
+	binary.LittleEndian.PutUint32(buf[16:], 16)      // PCM header size
+	binary.LittleEndian.PutUint16(buf[20:], 1)       // PCM = 1
+	binary.LittleEndian.PutUint16(buf[22:], 1)       // channels = 1
+	binary.LittleEndian.PutUint32(buf[24:], 16000)   // sample rate
+	binary.LittleEndian.PutUint32(buf[28:], 16000*2) // byte rate
+	binary.LittleEndian.PutUint16(buf[32:], 2)       // block align
+	binary.LittleEndian.PutUint16(buf[34:], 16)      // bits per sample
+
+	copy(buf[36:], []byte("data"))
+	binary.LittleEndian.PutUint32(buf[40:], dataSize)
+
+	copy(buf[44:], pcm)
+
+	return buf, nil
+}
 
 func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error) {
 	log.Printf("[media] start PTRP: %.60s…", sourceURL)
 
-	// создаём запись media
 	media, err := s.repo.InsertMedia(ctx, &models.Media{
 		SourceURL: sourceURL,
 		Type:      mediaType,
@@ -83,7 +109,6 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 		return nil, err
 	}
 
-	// единственный ffmpeg-поток (универсальный)
 	stream, err := s.continuousCapture(ctx, sourceURL)
 	if err != nil {
 		return nil, fmt.Errorf("continuousCapture: %w", err)
@@ -92,7 +117,7 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 	go func() {
 		defer stream.Close()
 
-		const chunkBytes = 160000 // 5 сек PCM
+		const chunkBytes = 160000
 		buf := make([]byte, chunkBytes)
 		chunkNum := 1
 
@@ -103,7 +128,6 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 				return
 
 			default:
-				// читаем ровно 5 сек
 				n, err := io.ReadFull(stream, buf)
 				if err != nil {
 					log.Printf("[media] readFull err: %v", err)
@@ -114,8 +138,16 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 					continue
 				}
 
-				// STT
-				txt, err := s.stt.Recognize(ctx, buf)
+				// *** ВСТАВЛЕННАЯ СТАНЦИЯ PCM → WAV ***
+				wav, err := pcmToWav(buf)
+				if err != nil {
+					log.Printf("[media] pcmToWav err chunk=%d: %v", chunkNum, err)
+					chunkNum++
+					continue
+				}
+
+				// WAV → STT
+				txt, err := s.stt.Recognize(ctx, wav)
 				if err != nil {
 					log.Printf("[media] STT err chunk=%d: %v", chunkNum, err)
 					chunkNum++
@@ -129,7 +161,6 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 					continue
 				}
 
-				// сохраняем в БД
 				_ = s.repo.InsertChunk(ctx, &models.MediaChunk{
 					MediaID:     media.ID,
 					ChunkNumber: chunkNum,
@@ -138,7 +169,6 @@ func (s *MediaService) ProcessMedia(ctx context.Context, sourceURL, mediaType, r
 
 				log.Printf("[media] SEND chunk=%d media=%d: %.40s", chunkNum, media.ID, txt)
 
-				// отправляем в WS
 				s.events <- ports.ChunkEvent{
 					MediaID:     media.ID,
 					ChunkNumber: chunkNum,

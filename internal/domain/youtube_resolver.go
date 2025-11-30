@@ -10,7 +10,6 @@ import (
 func ResolveYouTube(src string) (string, error) {
 	const yt = "/usr/local/bin/yt-dlp"
 
-	// itag=140 — прямой AAC-аудиофайл (стабильно, без DASH/HLS)
 	args := []string{"-f", "140", "--no-playlist", "-g", src}
 
 	log.Printf("[YT] cmd: yt-dlp %v", args)

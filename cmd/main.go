@@ -80,7 +80,6 @@ func main() {
 				),
 			)
 
-			// ключевой момент — отправляем строго в ev.RoomID
 			log.Printf("[SEND] room=%s chunk=%d media=%d text=%.30s",
 				ev.RoomID,
 				ev.ChunkNumber,
@@ -91,6 +90,7 @@ func main() {
 			hub.SendToRoom(ev.RoomID, payload)
 		}
 	}()
+
 	// HANDLERS
 	authHandler := delivery.NewAuthHandler(authService, zl)
 	streamHandler := delivery.NewStreamHandler(zl, streamService)
@@ -105,10 +105,8 @@ func main() {
 		AllowCredentials: true,
 	}))
 
-	// REST routes
 	delivery.RegisterRoutes(r, authHandler, streamHandler, authService)
 
-	// WS route
 	r.Get("/ws", ws.WSHandler(hub, mediaService))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
