@@ -62,16 +62,19 @@ func main() {
 
 	mediaRepo := infra.NewPostgresMediaRepo(pool)
 	stt := infra.NewYandexSTTService()
-	mediaService := domain.NewMediaService(mediaRepo, stt)
+
+	// Важное: выбираем КОНСЕРВАТИВНУЮ версию
+	mediaService := domain.NewConservativeMediaService(mediaRepo, stt)
 
 	// WS HUB
 	hub := ws.NewHub()
 
-	// ГЛАВНЫЙ broadcast listener
+	// BROADCAST LISTENER
 	go func() {
 		for ev := range mediaService.Events() {
+
 			payload := []byte(
-				fmt.Sprintf(`{"mediaId": %d, "chunk": %d, "text": "%s"}`,
+				fmt.Sprintf(`{"mediaId":%d,"chunk":%d,"text":"%s"}`,
 					ev.MediaID,
 					ev.ChunkNumber,
 					ev.Text,
@@ -104,6 +107,7 @@ func main() {
 
 	delivery.RegisterRoutes(r, authHandler, authService)
 
+	// WS route (через консервативный медиасервис)
 	r.Get("/ws", ws.WSHandler(hub, mediaService))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {

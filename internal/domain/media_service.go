@@ -2,7 +2,6 @@ package domain
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -13,186 +12,125 @@ import (
 	"github.com/Vovarama1992/journalist/internal/ports"
 )
 
-type MediaService struct {
+type ConservativeMediaService struct {
 	repo   ports.MediaRepository
 	stt    ports.STTService
 	events chan ports.ChunkEvent
 }
 
-func NewMediaService(repo ports.MediaRepository, stt ports.STTService) *MediaService {
-	return &MediaService{
+func NewConservativeMediaService(repo ports.MediaRepository, stt ports.STTService) *ConservativeMediaService {
+	return &ConservativeMediaService{
 		repo:   repo,
 		stt:    stt,
 		events: make(chan ports.ChunkEvent, 100),
 	}
 }
 
-func (s *MediaService) Events() <-chan ports.ChunkEvent {
+func (s *ConservativeMediaService) Events() <-chan ports.ChunkEvent {
 	return s.events
 }
 
-// WAV header
-func pcmToWav(pcm []byte) []byte {
-	const (
-		audioFormat   = 1
-		numChannels   = 1
-		sampleRate    = 16000
-		bitsPerSample = 16
-	)
-	byteRate := sampleRate * numChannels * bitsPerSample / 8
-	blockAlign := numChannels * bitsPerSample / 8
-	dataSize := len(pcm)
-	riffSize := 36 + dataSize
+// СТАНЦИЯ 1 — PCM_START
+func (s *ConservativeMediaService) PCM_START(ctx context.Context, url string) (io.ReadCloser, error) {
+	log.Printf("[PCM_START][IN] url=%s", url)
 
-	h := make([]byte, 44)
-	copy(h[0:], []byte("RIFF"))
-	binary.LittleEndian.PutUint32(h[4:], uint32(riffSize))
-	copy(h[8:], []byte("WAVE"))
-	copy(h[12:], []byte("fmt "))
-	binary.LittleEndian.PutUint32(h[16:], 16)
-	binary.LittleEndian.PutUint16(h[20:], audioFormat)
-	binary.LittleEndian.PutUint16(h[22:], numChannels)
-	binary.LittleEndian.PutUint32(h[24:], sampleRate)
-	binary.LittleEndian.PutUint32(h[28:], uint32(byteRate))
-	binary.LittleEndian.PutUint16(h[32:], uint16(blockAlign))
-	binary.LittleEndian.PutUint16(h[34:], bitsPerSample)
-	copy(h[36:], []byte("data"))
-	binary.LittleEndian.PutUint32(h[40:], uint32(dataSize))
-
-	return append(h, pcm...)
-}
-
-// --------------------------
-// S0 — RESOLVE URL
-// --------------------------
-func (s *MediaService) station0_resolveURL(ctx context.Context, src string) (string, error) {
-	log.Printf("[S0 IN] %s", src)
-
-	if !strings.Contains(src, "youtube.com") && !strings.Contains(src, "youtu.be") {
-		return src, nil
-	}
-
-	const bin = "/usr/local/bin/yt-dlp"
-	args := []string{"-f", "bestaudio/best", "--no-playlist", "-g", src}
-
-	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
-	full := string(out)
-
-	if err != nil {
-		log.Printf("[S0 WARN] yt-dlp exit=%v", err)
-	}
-
-	lines := strings.Split(full, "\n")
-	var url string
-	for i := len(lines) - 1; i >= 0; i-- {
-		l := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(l, "http") {
-			url = l
-			break
-		}
-	}
-
-	if url == "" {
-		return "", fmt.Errorf("resolve: no usable url")
-	}
-
-	return url, nil
-}
-
-// --------------------------
-// S1 — START PCM STREAM
-// --------------------------
-func (s *MediaService) station1_startPCM(ctx context.Context, direct string) (io.ReadCloser, error) {
-	cmd := exec.CommandContext(
-		ctx, "ffmpeg",
-		"-re",
-		"-seekable", "0",
-		"-i", direct,
-		"-vn",
-		"-ac", "1",
-		"-ar", "16000",
-		"-f", "s16le",
-		"pipe:1",
+	cmd := exec.CommandContext(ctx,
+		"ffmpeg", "-re", "-seekable", "0",
+		"-i", url,
+		"-vn", "-ac", "1", "-ar", "16000",
+		"-f", "s16le", "pipe:1",
 	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	stderr, _ := cmd.StderrPipe()
+
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
+	// INSIDE
 	go func() {
-		slurp, _ := io.ReadAll(stderr)
-		if len(slurp) > 0 {
-			log.Printf("[FFMPEG STDERR] %s", slurp)
+		errbuf, _ := io.ReadAll(stderr)
+		if len(errbuf) > 0 {
+			log.Printf("[PCM_START][INSIDE] ffmpeg stderr: %s", errbuf)
 		}
+		log.Printf("[PCM_START][OUT] ffmpeg exited")
 	}()
 
+	log.Printf("[PCM_START][OUT] stream opened")
 	return stdout, nil
 }
 
-// --------------------------
-// S2 — READ PCM CHUNK
-// --------------------------
-func (s *MediaService) station2_readPCM(r io.Reader, n int) ([]byte, error) {
-	buf := make([]byte, n)
-	_, err := io.ReadFull(r, buf)
+// СТАНЦИЯ 2 — CUT
+func (s *ConservativeMediaService) CUT(r io.Reader) ([]byte, error) {
+	log.Printf("[CUT][IN] reading pcm chunk")
+
+	const N = 160000
+	buf := make([]byte, N)
+
+	n, err := io.ReadFull(r, buf)
+	log.Printf("[CUT][INSIDE] n=%d err=%v", n, err)
+
 	if err != nil {
 		return nil, err
 	}
+
+	log.Printf("[CUT][OUT] chunk ok")
 	return buf, nil
 }
 
-// --------------------------
-// S3 — STT (PCM→WAV→TEXT)
-// --------------------------
-func (s *MediaService) station3_stt(ctx context.Context, pcm []byte) (string, error) {
-	wav := pcmToWav(pcm)
-	return s.stt.Recognize(ctx, wav)
+// СТАНЦИЯ 3 — WAV
+func (s *ConservativeMediaService) WAV(pcm []byte) []byte {
+	log.Printf("[WAV][IN] pcm_len=%d", len(pcm))
+	log.Printf("[WAV][INSIDE] passing pcm directly")
+	log.Printf("[WAV][OUT] wav_len=%d", len(pcm))
+	return pcm
 }
 
-// --------------------------
-// ORCHESTRATOR
-// --------------------------
-func (s *MediaService) ProcessMedia(ctx context.Context, src, mediaType, roomID string) (*models.Media, error) {
-	media, err := s.repo.InsertMedia(ctx, &models.Media{
-		SourceURL: src,
-		Type:      mediaType,
-	})
+// СТАНЦИЯ 4 — STT
+func (s *ConservativeMediaService) STT(ctx context.Context, wav []byte) (string, error) {
+	log.Printf("[STT][IN] wav_len=%d", len(wav))
+	txt, err := s.stt.Recognize(ctx, wav)
+	log.Printf("[STT][OUT] txt=%.40s err=%v", txt, err)
+	return txt, err
+}
+
+// ОРКЕСТР
+func (s *ConservativeMediaService) Process(ctx context.Context, url, roomID string) (*models.Media, error) {
+
+	media, err := s.repo.InsertMedia(ctx, &models.Media{SourceURL: url, Type: "audio"})
 	if err != nil {
 		return nil, err
 	}
 
-	direct, err := s.station0_resolveURL(ctx, src)
-	if err != nil {
-		return nil, err
-	}
-
-	stream, err := s.station1_startPCM(ctx, direct)
+	stream, err := s.PCM_START(ctx, url)
 	if err != nil {
 		return nil, err
 	}
 
 	go func() {
 		defer stream.Close()
-		const N = 160000
 		chunk := 1
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
+
 			default:
-				pcm, err := s.station2_readPCM(stream, N)
+				pcm, err := s.CUT(stream)
 				if err != nil {
+					log.Printf("[ORCH][ERR] CUT: %v", err)
 					return
 				}
 
-				txt, err := s.station3_stt(ctx, pcm)
+				wav := s.WAV(pcm)
+
+				txt, err := s.STT(ctx, wav)
 				if err != nil {
 					chunk++
 					continue

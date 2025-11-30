@@ -13,7 +13,7 @@ type ChunkEvent struct {
 	Text        string
 }
 
-type MediaService interface {
-	ProcessMedia(ctx context.Context, sourceURL, mediaType, roomID string) (*models.Media, error)
+type MediaProcessor interface {
+	Process(ctx context.Context, url, roomID string) (*models.Media, error)
 	Events() <-chan ChunkEvent
 }
