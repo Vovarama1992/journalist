@@ -9,29 +9,22 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
-	"time"
 )
 
 type GPTClient struct {
-	client *http.Client
 	apiKey string
-	model  string
+	client *http.Client
 }
 
 func NewGPTClient() *GPTClient {
 	key := os.Getenv("OPENROUTER_API_KEY")
 	if key == "" {
-		log.Println("[GPT][ERROR] OPENROUTER_API_KEY not set")
-		panic("OPENROUTER_API_KEY not set")
+		log.Printf("[GPT] FATAL: OPENROUTER_API_KEY is empty")
 	}
 
 	return &GPTClient{
-		client: &http.Client{
-			Timeout: 25 * time.Second,
-		},
 		apiKey: key,
-		model:  "openai/gpt-5.1",
+		client: &http.Client{},
 	}
 }
 
@@ -47,98 +40,73 @@ type orRequest struct {
 
 type orResponse struct {
 	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
+		Message orMessage `json:"message"`
 	} `json:"choices"`
 }
 
-func (c *GPTClient) Generate(
-	ctx context.Context,
-	previous string,
-	nextRaw string,
-) (string, error) {
+// ProcessChunk — просто реализует ports.GPTService
+func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string, error) {
+	if g.apiKey == "" {
+		return "", fmt.Errorf("no OPENROUTER_API_KEY")
+	}
 
-	systemPrompt := "Ты обработчик текстовых транскриптов. Ты всегда получаешь два текста: Previous и Next. Previous уже обработан, его менять не нужно. Next — сырой фрагмент речи. Твоя задача — сделать Next читаемым и естественно стыкующимся с Previous. Возвращай только обработанный Next."
+	// SYSTEM PROMPT — спокойный, ровный, без истерик
+	systemPrompt := `Ты — модуль сглаживания текста. 
+Тебе даётся предыдущий уже обработанный чанк и новый сырой чанк.
+Задача: привести сырой чанк в читаемый вид, исправить начало/конец,
+сделать стыковку с предыдущим. Предыдущий чанк НЕ возвращай. 
+Возвращай ТОЛЬКО обработанный сырой чанк.`
 
-	userPrompt := buildPrompt(previous, nextRaw)
-
-	reqBody := orRequest{
-		Model: c.model,
+	body := orRequest{
+		Model: "openai/gpt-5.1",
 		Messages: []orMessage{
 			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
+			{Role: "user", Content: fmt.Sprintf("Previous:\n%s\n\nRaw:\n%s", prev, raw)},
 		},
 	}
 
-	b, _ := json.Marshal(reqBody)
+	j, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(
-		ctx,
+	log.Printf("[GPT] request prev=%.40q raw=%.40q", prev, raw)
+
+	req, _ := http.NewRequestWithContext(ctx,
 		"POST",
 		"https://openrouter.ai/api/v1/chat/completions",
-		bytes.NewBuffer(b),
+		bytes.NewReader(j),
 	)
-	if err != nil {
-		log.Printf("[GPT][ERROR] build request: %v", err)
-		return "", err
-	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("HTTP-Referer", "https://journalist.local")
-	req.Header.Set("X-Title", "journalist")
+	req.Header.Set("Authorization", "Bearer "+g.apiKey)
+	req.Header.Set("HTTP-Referer", "https://aifulls.com")
+	req.Header.Set("X-Title", "journalist-transcriber")
 
-	resp, err := c.client.Do(req)
+	resp, err := g.client.Do(req)
 	if err != nil {
-		log.Printf("[GPT][ERROR] http: %v", err)
+		log.Printf("[GPT] http err=%v", err)
 		return "", err
 	}
 	defer resp.Body.Close()
 
+	rawResp, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != 200 {
-		raw, _ := io.ReadAll(resp.Body)
-
-		var er struct {
-			Error interface{} `json:"error"`
-		}
-		_ = json.Unmarshal(raw, &er)
-
-		switch v := er.Error.(type) {
-		case string:
-			if v != "" {
-				log.Printf("[GPT][ERROR] %s", v)
-				return "", fmt.Errorf(v)
-			}
-		case map[string]interface{}:
-			if msg, ok := v["message"].(string); ok && msg != "" {
-				log.Printf("[GPT][ERROR] %s", msg)
-				return "", fmt.Errorf(msg)
-			}
-		}
-
-		log.Printf("[GPT][ERROR] raw=%s", string(raw))
-		return "", fmt.Errorf(string(raw))
+		log.Printf("[GPT] bad status=%d body=%.200s", resp.StatusCode, rawResp)
+		return "", fmt.Errorf("gpt status %d", resp.StatusCode)
 	}
 
-	var parsed orResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		log.Printf("[GPT][ERROR] decode: %v", err)
+	var out orResponse
+	if err := json.Unmarshal(rawResp, &out); err != nil {
+		log.Printf("[GPT] decode err=%v", err)
 		return "", err
 	}
 
-	if len(parsed.Choices) == 0 {
-		log.Printf("[GPT][ERROR] empty choices")
-		return "", fmt.Errorf("empty choices")
+	if len(out.Choices) == 0 {
+		log.Printf("[GPT] empty choices")
+		return "", fmt.Errorf("no choices")
 	}
 
-	return parsed.Choices[0].Message.Content, nil
-}
+	res := out.Choices[0].Message.Content
 
-func buildPrompt(previous, next string) string {
-	return fmt.Sprintf(
-		"Previous:\n%s\n\nNext:\n%s",
-		strings.TrimSpace(previous),
-		strings.TrimSpace(next),
-	)
+	log.Printf("[GPT] ok out=%.80q", res)
+	return res, nil
 }

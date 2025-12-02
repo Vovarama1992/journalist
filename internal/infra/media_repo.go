@@ -91,3 +91,28 @@ func (r *PostgresMediaRepo) GetLastChunk(ctx context.Context, mediaID int) (*mod
 
 	return &c, nil
 }
+
+func (r *PostgresMediaRepo) GetMediaByID(ctx context.Context, id int) (*models.Media, error) {
+	query := `
+		SELECT id, source_url, media_type, created_at
+		FROM media
+		WHERE id = $1
+	`
+
+	var m models.Media
+
+	err := r.pool.QueryRow(ctx, query, id).Scan(
+		&m.ID,
+		&m.SourceURL,
+		&m.Type,
+		&m.CreatedAt,
+	)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get media by id: %w", err)
+	}
+
+	return &m, nil
+}
