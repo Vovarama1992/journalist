@@ -12,6 +12,7 @@ import (
 	"github.com/Vovarama1992/journalist/internal/delivery"
 	ws "github.com/Vovarama1992/journalist/internal/delivery/ws"
 	"github.com/Vovarama1992/journalist/internal/domain"
+	"github.com/Vovarama1992/journalist/internal/domain/stations"
 	"github.com/Vovarama1992/journalist/internal/infra"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
@@ -63,8 +64,21 @@ func main() {
 	mediaRepo := infra.NewPostgresMediaRepo(pool)
 	stt := infra.NewYandexSTTService()
 
-	// Важное: выбираем КОНСЕРВАТИВНУЮ версию
-	mediaService := domain.NewAggressiveMediaService(mediaRepo, stt)
+	// GPT CLIENT
+	gptClient := infra.NewGPTClient()
+
+	// STATIONS
+	s1 := stations.NewS1ResolveURL()
+	s2 := stations.NewS2GrabPCM()
+	s3 := stations.NewS3PCMtoWAV()
+	s4 := stations.NewS4WAVtoText(stt)
+
+	// MEDIA SERVICE (оркестратор)
+	mediaService := domain.NewMediaService(
+		mediaRepo,
+		s1, s2, s3, s4,
+		gptClient,
+	)
 
 	// WS HUB
 	hub := ws.NewHub()
@@ -107,7 +121,7 @@ func main() {
 
 	delivery.RegisterRoutes(r, authHandler, authService)
 
-	// WS route (через консервативный медиасервис)
+	// WS route
 	r.Get("/ws", ws.WSHandler(hub, mediaService))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {

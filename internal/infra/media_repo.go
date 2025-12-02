@@ -63,3 +63,31 @@ func (r *PostgresMediaRepo) GetLastChunkNumber(ctx context.Context, mediaID int)
 	err := r.pool.QueryRow(ctx, query, mediaID).Scan(&last)
 	return last, err
 }
+func (r *PostgresMediaRepo) GetLastChunk(ctx context.Context, mediaID int) (*models.MediaChunk, error) {
+	query := `
+		SELECT id, media_id, chunk_number, text
+		FROM media_chunk
+		WHERE media_id = $1
+		ORDER BY chunk_number DESC
+		LIMIT 1
+	`
+
+	var c models.MediaChunk
+
+	err := r.pool.QueryRow(ctx, query, mediaID).Scan(
+		&c.ID,
+		&c.MediaID,
+		&c.ChunkNumber,
+		&c.Text,
+	)
+
+	if err != nil {
+		// если нет ни одного чанка — вернём (nil, nil)
+		if err.Error() == "no rows in result set" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get last chunk: %w", err)
+	}
+
+	return &c, nil
+}
