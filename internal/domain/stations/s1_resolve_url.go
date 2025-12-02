@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-const maxPreview = 180 // максимум символов, чтобы не засрать лог
-
 type S1ResolveURL struct{}
 
 func NewS1ResolveURL() *S1ResolveURL { return &S1ResolveURL{} }
@@ -17,33 +15,35 @@ func NewS1ResolveURL() *S1ResolveURL { return &S1ResolveURL{} }
 func (s *S1ResolveURL) Run(ctx context.Context, pageURL string) (string, error) {
 	log.Printf("[S1] run pageURL=%s", pageURL)
 
-	out, err := exec.CommandContext(
-		ctx,
+	out, err := exec.CommandContext(ctx,
 		"yt-dlp", "--no-playlist", "-g", pageURL,
 	).CombinedOutput()
-
-	raw := strings.TrimSpace(string(out))
-	if len(raw) > maxPreview {
-		raw = raw[:maxPreview] + "…"
-	}
 
 	if err != nil {
 		log.Printf("[S1] yt-dlp err=%v", err)
 	}
 
-	if raw == "" {
-		log.Printf("[S1] empty output")
-		return "", fmt.Errorf("empty yt-dlp output")
+	raw := strings.TrimSpace(string(out))
+	lines := strings.Split(raw, "\n")
+
+	var audioURL string
+	for _, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if strings.HasPrefix(ln, "http") {
+			audioURL = ln
+			break
+		}
 	}
 
-	parts := strings.Split(raw, "\n")
-	last := strings.TrimSpace(parts[len(parts)-1])
-
-	if !strings.HasPrefix(last, "http") {
-		log.Printf("[S1] invalid audioURL=%q", last)
+	if audioURL == "" {
+		trim := raw
+		if len(trim) > 200 {
+			trim = trim[:200] + "..."
+		}
+		log.Printf("[S1] invalid audioURL=%q", trim)
 		return "", fmt.Errorf("invalid audio url")
 	}
 
-	log.Printf("[S1] ok audioURL=%s", last)
-	return last, nil
+	log.Printf("[S1] ok url=%s", audioURL)
+	return audioURL, nil
 }
