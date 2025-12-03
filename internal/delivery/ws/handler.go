@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -13,7 +14,14 @@ type startMsg struct {
 	MediaID int    `json:"mediaID"`
 }
 
-func WSHandler(hub *Hub, media ports.MediaProcessor) http.HandlerFunc {
+// Теперь принимаем ctxWS и cancelWS
+func WSHandler(
+	hub *Hub,
+	media ports.MediaProcessor,
+	ctxWS context.Context,
+	cancelWS context.CancelFunc,
+) http.HandlerFunc {
+
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		conn, err := Upgrader.Upgrade(w, r, nil)
@@ -29,9 +37,16 @@ func WSHandler(hub *Hub, media ports.MediaProcessor) http.HandlerFunc {
 
 		log.Printf("[WS][IN] start room=%s", roomID)
 		hub.Register(roomID, conn)
-		defer hub.Unregister(roomID)
 
-		// новое: читаем JSON {url, mediaID}
+		// важный defer
+		defer func() {
+			log.Printf("[WS][OUT] room=%s → cancelWS()", roomID)
+			cancelWS() // ← гасим пайплайн
+			hub.Unregister(roomID)
+			conn.Close()
+		}()
+
+		// читаем JSON init-пакета от клиента
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("[WS][IN] read fail: %v", err)
@@ -48,16 +63,15 @@ func WSHandler(hub *Hub, media ports.MediaProcessor) http.HandlerFunc {
 		log.Printf("[WS][INSIDE] url=%s mediaID=%d", req.URL, req.MediaID)
 		hub.SendToRoom(roomID, []byte(`{"status":"processing_started"}`))
 
-		// минимальное изменение: передаём mediaID в Process
+		// запускаем pipeline с ctxWS
 		go func() {
-			mediaObj, err := media.Process(r.Context(), req.URL, roomID, req.MediaID)
+			mediaObj, err := media.Process(ctxWS, req.URL, roomID, req.MediaID)
 			if err != nil {
 				log.Printf("[WS][OUT] media error: %v", err)
 				hub.SendToRoom(roomID, []byte(`{"status":"error"}`))
 				return
 			}
 
-			// фронту нужно вернуть медиайд
 			resp := map[string]any{
 				"status":  "ok",
 				"mediaID": mediaObj.ID,
@@ -66,12 +80,12 @@ func WSHandler(hub *Hub, media ports.MediaProcessor) http.HandlerFunc {
 			hub.SendToRoom(roomID, b)
 		}()
 
-		// держим соединение живым, как раньше
+		// держим соединение открытым, пока клиент не отвалится
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
 				log.Printf("[WS][OUT] disconnected room=%s", roomID)
-				return
+				return // defer вызовет cancelWS()
 			}
 		}
 	}

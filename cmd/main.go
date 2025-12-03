@@ -122,8 +122,15 @@ func main() {
 
 	delivery.RegisterRoutes(r, authHandler, authService, hMedia)
 
-	// WS route
-	r.Get("/ws", ws.WSHandler(hub, mediaService))
+	// WS route — ТУТ ФИКС
+	r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
+
+		// создаём контекст для конкретного WebSocket
+		ctxWS, cancelWS := context.WithCancel(context.Background())
+
+		// передаём его в WSHandler
+		ws.WSHandler(hub, mediaService, ctxWS, cancelWS)(w, r)
+	})
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
