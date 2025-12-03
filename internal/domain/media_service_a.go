@@ -49,13 +49,13 @@ func (m *MediaService) Process(
 	ctx context.Context,
 	srcURL string,
 	roomID string,
-	mediaID int, // ← добавили
+	mediaID int,
 ) (*models.Media, error) {
 
 	var media *models.Media
 	var err error
 
-	// 1) если mediaID > 0 — продолжаем существующий
+	// --- CASE A: RESUME ---
 	if mediaID > 0 {
 		media, err = m.repo.GetMediaByID(ctx, mediaID)
 		if err != nil {
@@ -64,10 +64,15 @@ func (m *MediaService) Process(
 		if media == nil {
 			return nil, fmt.Errorf("media %d not found", mediaID)
 		}
+
 		log.Printf("[MEDIA] resume mediaID=%d", mediaID)
 
-	} else {
-		// 2) иначе создаём новое
+		// ключевой фикс:
+		srcURL = media.SourceURL
+	}
+
+	// --- CASE B: NEW ---
+	if mediaID == 0 {
 		media, err = m.repo.InsertMedia(ctx, &models.Media{
 			SourceURL: srcURL,
 			Type:      "audio",
@@ -78,11 +83,13 @@ func (m *MediaService) Process(
 		log.Printf("[MEDIA] new mediaID=%d", media.ID)
 	}
 
-	// --------------- оркестр без изменений ---------------
+	// ------------------------
+	// PIPELINE
+	// ------------------------
 	go func() {
 		chunk := 1
 
-		// если резюм — продолжаем номер
+		// resume продолжает нумерацию
 		if mediaID > 0 {
 			last, _ := m.repo.GetLastChunk(ctx, media.ID)
 			if last != nil {
@@ -98,7 +105,7 @@ func (m *MediaService) Process(
 			default:
 			}
 
-			log.Printf("[MEDIA] loop chunk=%d", chunk)
+			log.Printf("[MEDIA] loop chunk=%d srcURL=%s", chunk, srcURL)
 
 			audioURL, err := m.s1.Run(ctx, srcURL)
 			if err != nil {
