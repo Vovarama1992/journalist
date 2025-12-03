@@ -13,6 +13,6 @@ type MediaRepository interface {
 	GetLastChunkNumber(ctx context.Context, mediaID int) (int, error)
 	GetMediaByID(ctx context.Context, id int) (*models.Media, error)
 
-	// Новый метод: получить последний чанк
+	GetMediaHistory(ctx context.Context, mediaID int) (string, error)
 	GetLastChunk(ctx context.Context, mediaID int) (*models.MediaChunk, error)
 }

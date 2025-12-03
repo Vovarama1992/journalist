@@ -62,6 +62,7 @@ func main() {
 	authService := domain.NewAuthService(pool, secret)
 
 	mediaRepo := infra.NewPostgresMediaRepo(pool)
+	hMedia := delivery.NewMediaHandler(mediaRepo, zl)
 	stt := infra.NewYandexSTTService()
 
 	// GPT CLIENT
@@ -119,7 +120,7 @@ func main() {
 		AllowCredentials: true,
 	}))
 
-	delivery.RegisterRoutes(r, authHandler, authService)
+	delivery.RegisterRoutes(r, authHandler, authService, hMedia)
 
 	// WS route
 	r.Get("/ws", ws.WSHandler(hub, mediaService))

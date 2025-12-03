@@ -3,6 +3,7 @@ package infra
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Vovarama1992/journalist/internal/models"
 	"github.com/Vovarama1992/journalist/internal/ports"
@@ -115,4 +116,27 @@ func (r *PostgresMediaRepo) GetMediaByID(ctx context.Context, id int) (*models.M
 	}
 
 	return &m, nil
+}
+
+func (r *PostgresMediaRepo) GetMediaHistory(ctx context.Context, mediaID int) (string, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT text FROM media_chunk WHERE media_id=$1 ORDER BY chunk_number ASC`,
+		mediaID,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var sb strings.Builder
+	for rows.Next() {
+		var txt string
+		if err := rows.Scan(&txt); err != nil {
+			return "", err
+		}
+		sb.WriteString(txt)
+		sb.WriteString(" ")
+	}
+
+	return strings.TrimSpace(sb.String()), nil
 }
