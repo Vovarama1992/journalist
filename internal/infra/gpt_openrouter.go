@@ -48,34 +48,33 @@ type orResponse struct {
 func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string, error) {
 	if g.apiKey == "" {
 		return "", fmt.Errorf("no OPENROUTER_API_KEY")
+
 	}
 
 	// SYSTEM PROMPT — спокойный, ровный, без истерик
-	systemPrompt := `Тебе даются:
-1) previous — уже обработанный текст предыдущих чанков  
-2) raw — сырой текст нового чанка
+	systemPrompt := `Тебе даны:
+previous — уже обработанный текст предыдущего чанка  
+raw — сырой текст нового чанка
 
-Твоя задача:
-— корректно продолжить предыдущий текст  
-— сгладить стык между previous и raw  
-— оформить новый чанк в структурированный, читаемый вид  
+Задача:
+— сделать плавный стык previous → raw  
+— убрать повторы начала/конца  
+— привести raw в нормальный читабельный вид  
+— если реплика продолжается, НЕ вставляй новое «Спикер:», а продолжай речь  
+— если начинается новая реплика, ставь **Спикер:** один раз в начале абзаца  
+— разбивай текст на короткие абзацы по смыслу  
+— никаких новых фактов, только корректура и структурирование raw  
 
-Правила форматирования:
-— Выделяй *имя говорящего* жирным: **Имя:**  
-— Если имя неизвестно, используй **Спикер:**  
-— Разбивай поток на короткие абзацы по смыслу  
-— Убирай повторы, обрывы, нестыковки  
-— НЕ возвращай previous  
-— Возвращай ТОЛЬКО новый, обработанный чанк  
-— Формат должен быть таким, как будто это живой диалог с абзацами
-
-Важно:
-— Если реплика началась в previous, корректно продолжи её  
-— Не придумывай новых фактов, только структурируй raw  `
+Формат:
+— previous НЕ возвращай  
+— вернуть ТОЛЬКО новый обработанный чанк  
+— имена выделяй так: **Спикер:**
+— не дублируй тэг **Спикер:** несколько раз подряд в одном чанке `
 
 	body := orRequest{
 		Model: "openai/gpt-5.1",
 		Messages: []orMessage{
+
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: fmt.Sprintf("Previous:\n%s\n\nRaw:\n%s", prev, raw)},
 		},
@@ -95,7 +94,6 @@ func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string,
 	req.Header.Set("Authorization", "Bearer "+g.apiKey)
 	req.Header.Set("HTTP-Referer", "https://aifulls.com")
 	req.Header.Set("X-Title", "journalist-transcriber")
-
 	resp, err := g.client.Do(req)
 	if err != nil {
 		log.Printf("[GPT] http err=%v", err)

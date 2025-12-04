@@ -14,12 +14,11 @@ type startMsg struct {
 	MediaID int    `json:"mediaID"`
 }
 
-// Теперь принимаем ctxWS и cancelWS
 func WSHandler(
 	hub *Hub,
 	media ports.MediaProcessor,
 	ctxWS context.Context,
-	cancelWS context.CancelFunc,
+	_ context.CancelFunc,
 ) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -38,15 +37,12 @@ func WSHandler(
 		log.Printf("[WS][IN] start room=%s", roomID)
 		hub.Register(roomID, conn)
 
-		// важный defer
 		defer func() {
-			log.Printf("[WS][OUT] room=%s → cancelWS()", roomID)
-			cancelWS() // ← гасим пайплайн
+			log.Printf("[WS][OUT] room=%s", roomID)
 			hub.Unregister(roomID)
 			conn.Close()
 		}()
 
-		// читаем JSON init-пакета от клиента
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("[WS][IN] read fail: %v", err)
@@ -63,7 +59,6 @@ func WSHandler(
 		log.Printf("[WS][INSIDE] url=%s mediaID=%d", req.URL, req.MediaID)
 		hub.SendToRoom(roomID, []byte(`{"status":"processing_started"}`))
 
-		// запускаем pipeline с ctxWS
 		go func() {
 			mediaObj, err := media.Process(ctxWS, req.URL, roomID, req.MediaID)
 			if err != nil {
@@ -80,12 +75,11 @@ func WSHandler(
 			hub.SendToRoom(roomID, b)
 		}()
 
-		// держим соединение открытым, пока клиент не отвалится
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
 				log.Printf("[WS][OUT] disconnected room=%s", roomID)
-				return // defer вызовет cancelWS()
+				return
 			}
 		}
 	}
