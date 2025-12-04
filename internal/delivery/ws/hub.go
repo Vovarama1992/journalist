@@ -23,21 +23,27 @@ func (h *Hub) Register(roomID string, conn *websocket.Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.rooms[roomID] == nil {
+	if _, ok := h.rooms[roomID]; !ok {
 		h.rooms[roomID] = make(map[*websocket.Conn]bool)
 	}
 	h.rooms[roomID][conn] = true
 }
 
-func (h *Hub) Unregister(roomID string) {
+func (h *Hub) Unregister(roomID string, conn *websocket.Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if conns, ok := h.rooms[roomID]; ok {
-		for conn := range conns {
-			conn.Close()
-			delete(conns, conn)
-		}
+	conns, ok := h.rooms[roomID]
+	if !ok {
+		return
+	}
+
+	if _, ok := conns[conn]; ok {
+		delete(conns, conn)
+		conn.Close()
+	}
+
+	if len(conns) == 0 {
 		delete(h.rooms, roomID)
 	}
 }
@@ -53,20 +59,7 @@ func (h *Hub) SendToRoom(roomID string, msg []byte) {
 
 	for conn := range conns {
 		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			log.Printf("[hub] sendToRoom err room=%s: %v", roomID, err)
-		}
-	}
-}
-
-func (h *Hub) Broadcast(msg []byte) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-
-	for roomID, conns := range h.rooms {
-		for conn := range conns {
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				log.Printf("[hub] broadcast err room=%s: %v", roomID, err)
-			}
+			log.Printf("[hub] send err room=%s: %v", roomID, err)
 		}
 	}
 }

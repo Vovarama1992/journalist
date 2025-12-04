@@ -37,12 +37,13 @@ func WSHandler(
 		log.Printf("[WS][IN] start room=%s", roomID)
 		hub.Register(roomID, conn)
 
+		// правильный defer
 		defer func() {
 			log.Printf("[WS][OUT] room=%s", roomID)
-			hub.Unregister(roomID)
-			conn.Close()
+			hub.Unregister(roomID, conn)
 		}()
 
+		// читаем init
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("[WS][IN] read fail: %v", err)
@@ -59,6 +60,7 @@ func WSHandler(
 		log.Printf("[WS][INSIDE] url=%s mediaID=%d", req.URL, req.MediaID)
 		hub.SendToRoom(roomID, []byte(`{"status":"processing_started"}`))
 
+		// pipeline
 		go func() {
 			mediaObj, err := media.Process(ctxWS, req.URL, roomID, req.MediaID)
 			if err != nil {
@@ -75,10 +77,11 @@ func WSHandler(
 			hub.SendToRoom(roomID, b)
 		}()
 
+		// держим соединение живым
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
-				log.Printf("[WS][OUT] disconnected room=%s", roomID)
+				log.Printf("[WS][OUT] disconnect room=%s", roomID)
 				return
 			}
 		}
