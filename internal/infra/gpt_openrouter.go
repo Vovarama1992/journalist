@@ -34,8 +34,9 @@ type orMessage struct {
 }
 
 type orRequest struct {
-	Model    string      `json:"model"`
-	Messages []orMessage `json:"messages"`
+	Model     string      `json:"model"`
+	Messages  []orMessage `json:"messages"`
+	MaxTokens int         `json:"max_tokens"`
 }
 
 type orResponse struct {
@@ -101,9 +102,9 @@ func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string,
 — Никаких html-тегов.`
 
 	body := orRequest{
-		Model: "openai/gpt-5.1",
+		Model:     "openai/gpt-5.1",
+		MaxTokens: 300,
 		Messages: []orMessage{
-
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: fmt.Sprintf("Previous:\n%s\n\nRaw:\n%s", prev, raw)},
 		},
