@@ -135,8 +135,9 @@ func (m *MediaService) Process(
 
 			proc, err := m.s5.Run(ctx, prevText, raw)
 			if err != nil || proc == "" {
-				log.Printf("[MEDIA] GPT empty")
-				continue
+				log.Printf("[MEDIA] GPT FAIL — using raw text")
+
+				proc = raw // используем S4 без обработки
 			}
 
 			err = m.repo.InsertChunk(ctx, &models.MediaChunk{
