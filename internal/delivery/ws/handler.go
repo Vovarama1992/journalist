@@ -18,7 +18,7 @@ func WSHandler(
 	hub *Hub,
 	media ports.MediaProcessor,
 	ctxWS context.Context,
-	_ context.CancelFunc,
+	cancelWS context.CancelFunc,
 ) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -39,10 +39,10 @@ func WSHandler(
 
 		// правильный defer
 		defer func() {
+			cancelWS() // <- ключевой фикс
 			log.Printf("[WS][OUT] room=%s", roomID)
 			hub.Unregister(roomID, conn)
 		}()
-
 		// читаем init
 		_, raw, err := conn.ReadMessage()
 		if err != nil {

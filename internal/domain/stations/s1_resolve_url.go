@@ -15,8 +15,10 @@ func NewS1ResolveURL() *S1ResolveURL { return &S1ResolveURL{} }
 func (s *S1ResolveURL) Run(ctx context.Context, pageURL string) (string, error) {
 	log.Printf("[S1] run pageURL=%s", pageURL)
 
+	// КРИТИЧЕСКАЯ ПРАВКА:
+	// просим yt-dlp вернуть ТОЛЬКО аудиопоток
 	out, err := exec.CommandContext(ctx,
-		"yt-dlp", "--no-playlist", "-g", pageURL,
+		"yt-dlp", "--no-playlist", "-f", "bestaudio", "-g", pageURL,
 	).CombinedOutput()
 
 	if err != nil {
@@ -24,6 +26,11 @@ func (s *S1ResolveURL) Run(ctx context.Context, pageURL string) (string, error) 
 	}
 
 	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return "", fmt.Errorf("empty yt-dlp output")
+	}
+
+	// yt-dlp может вернуть несколько строк, но аудио — первая строка
 	lines := strings.Split(raw, "\n")
 
 	var audioURL string

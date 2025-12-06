@@ -12,7 +12,9 @@ const maxS2ErrPreview = 180
 
 type S2GrabPCM struct{}
 
-func NewS2GrabPCM() *S2GrabPCM { return &S2GrabPCM{} }
+func NewS2GrabPCM() *S2GrabPCM {
+	return &S2GrabPCM{}
+}
 
 func (s *S2GrabPCM) Run(ctx context.Context, audioURL string) ([]byte, error) {
 	log.Printf("[S2] run audioURL=%s", audioURL)
@@ -39,7 +41,7 @@ func (s *S2GrabPCM) Run(ctx context.Context, audioURL string) ([]byte, error) {
 		return nil, fmt.Errorf("[S2] ffmpeg start: %w", err)
 	}
 
-	// короткий stderr
+	// читаем stderr коротко (как раньше)
 	go func() {
 		b, _ := io.ReadAll(stderr)
 		if len(b) > 0 {
@@ -51,10 +53,35 @@ func (s *S2GrabPCM) Run(ctx context.Context, audioURL string) ([]byte, error) {
 		}
 	}()
 
-	pcm, err := io.ReadAll(stdout)
-	if err != nil {
-		return nil, fmt.Errorf("[S2] read pcm: %w", err)
+	// ----------- FIX: корректное чтение stdout с ctx -----------
+	var pcm []byte
+	buf := make([]byte, 4096)
+
+readLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			// убьёт ffmpeg, stdout закроется, завершаем
+			_ = cmd.Process.Kill()
+			return nil, ctx.Err()
+
+		default:
+
+		}
+
+		n, err := stdout.Read(buf)
+		if n > 0 {
+			pcm = append(pcm, buf[:n]...)
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				break readLoop
+			}
+			return nil, fmt.Errorf("[S2] read pcm: %w", err)
+		}
 	}
+	// ----------------------------------------------------------
 
 	_ = cmd.Wait()
 
