@@ -2,9 +2,17 @@ package stations
 
 import (
 	"context"
+	"log"
 
 	"github.com/Vovarama1992/journalist/internal/ports"
 )
+
+func trim(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
 
 type S5GPT struct {
 	gpt ports.GPTService
@@ -15,15 +23,15 @@ func NewS5GPT(gpt ports.GPTService) *S5GPT {
 }
 
 func (s *S5GPT) Run(ctx context.Context, prev, raw string) (string, error) {
-
-	println("[S5] start")
+	log.Printf("[S5][IN-prev] %q", trim(prev, 180))
+	log.Printf("[S5][IN-raw ] %q", trim(raw, 180))
 
 	out, err := s.gpt.ProcessChunk(ctx, prev, raw)
 	if err != nil {
-		println("[S5] fail")
+		log.Printf("[S5][ERR] %v", err)
 		return "", err
 	}
 
-	println("[S5] ok")
+	log.Printf("[S5][OUT] %q", trim(out, 220))
 	return out, nil
 }

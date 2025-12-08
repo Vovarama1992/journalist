@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+
+	"github.com/Vovarama1992/journalist/internal/ports"
 )
 
 type GPTClient struct {
@@ -15,12 +17,8 @@ type GPTClient struct {
 	client *http.Client
 }
 
-func NewGPTClient() *GPTClient {
+func NewGPTClient() ports.GPTService {
 	key := os.Getenv("OPENROUTER_API_KEY")
-	if key == "" {
-		println("[GPT] no api key")
-	}
-
 	return &GPTClient{
 		apiKey: key,
 		client: &http.Client{},
@@ -56,9 +54,43 @@ func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string,
 	systemPrompt := `Тебе даются два текста:
 
 previous — уже готовый фрагмент.
-raw — сырой ASR-текст.
+raw — сырой ASR-текст (грязный, с повторами, шумами и кривыми фразами).
 
-... (весь твой prompt полностью сохранён)
+Задача:
+— Превратить raw в чистую, нормальную человеческую речь.
+— Убрать повторы, шумы, оговорки, дубли слов, сломанные конструкции.
+— Сделать так, чтобы итог органично приклеился к previous.
+— previous НЕ возвращать.
+— Всегда возвращать непустой текст.
+
+Правила:
+
+Если raw — это прямое продолжение того же говорящего:
+— Найти максимальное совпадение между концом previous и началом raw.
+— Если начало raw даже частично, примерно или смыслово дублирует конец previous — считать это повтором и вырезать полностью. Неважно, совпадают ли слова буквально или только по смыслу.
+— Полностью удалить совпадающее или частично совпадающее начало.
+— Продолжить фрагмент с маленькой буквы, без имени говорящего.
+— Текст переписать в нормальную речь.
+
+Если raw звучит как новая реплика (новая интонация, «ну», «а», «так», «ладно», «короче», «слушай», «итак» и т.п.):
+— Начать строго с новой строки.
+— Строка 1: СПИКЕР:
+— Строка 2: уже переписанный, чистый, гладкий текст (новый абзац).
+— Никаких сшиваний с previous.
+— Никакого повторения previous.
+
+Стиль:
+— Плавная, нормальная, человеческая речь.
+— Никаких повторов.
+— Выправлять синтаксис.
+— Разбивать на короткие абзацы.
+— Смысл сохранять.
+
+Формат вывода:
+— Только новый чанк.
+— Никаких HTML.
+— Никаких служебных слов.
+— Один чистый читабельный фрагмент, готовый к склейке.
 `
 
 	body := orRequest{
@@ -85,7 +117,6 @@ raw — сырой ASR-текст.
 
 	resp, err := g.client.Do(req)
 	if err != nil {
-		println("[GPT] fail")
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -93,22 +124,17 @@ raw — сырой ASR-текст.
 	rawResp, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != 200 {
-		println("[GPT] fail")
 		return "", fmt.Errorf("gpt status %d", resp.StatusCode)
 	}
 
 	var out orResponse
 	if err := json.Unmarshal(rawResp, &out); err != nil {
-		println("[GPT] fail")
 		return "", err
 	}
 
 	if len(out.Choices) == 0 {
-		println("[GPT] fail")
 		return "", fmt.Errorf("no choices")
 	}
-
-	println("[GPT] ok")
 
 	return out.Choices[0].Message.Content, nil
 }
