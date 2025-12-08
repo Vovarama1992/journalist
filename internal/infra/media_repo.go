@@ -140,3 +140,58 @@ func (r *PostgresMediaRepo) GetMediaHistory(ctx context.Context, mediaID int) (s
 
 	return strings.TrimSpace(sb.String()), nil
 }
+
+func (r *PostgresMediaRepo) InsertPendingChunk(
+	ctx context.Context,
+	mediaID int,
+	filePath string,
+) (*models.MediaChunk, error) {
+
+	query := `
+		INSERT INTO media_chunk (media_id, chunk_number, file_path, status)
+		VALUES (
+			$1,
+			COALESCE((
+				SELECT MAX(chunk_number)+1 FROM media_chunk WHERE media_id=$1
+			), 1),
+			$2,
+			'pending'
+		)
+		RETURNING id, chunk_number
+	`
+
+	var c models.MediaChunk
+	err := r.pool.QueryRow(ctx, query, mediaID, filePath).Scan(&c.ID, &c.ChunkNumber)
+	if err != nil {
+		return nil, fmt.Errorf("insert pending chunk: %w", err)
+	}
+
+	c.MediaID = mediaID
+	c.FilePath = filePath
+	c.Status = "pending"
+	return &c, nil
+}
+
+// ================================================================
+// NEW: завершить обработку чанка (STT+GPT)
+// ================================================================
+func (r *PostgresMediaRepo) CompleteChunk(
+	ctx context.Context,
+	chunkID int,
+	text string,
+) error {
+
+	query := `
+		UPDATE media_chunk
+		SET
+			text = $1,
+			status = 'done'
+		WHERE id = $2
+	`
+
+	_, err := r.pool.Exec(ctx, query, text, chunkID)
+	if err != nil {
+		return fmt.Errorf("complete chunk: %w", err)
+	}
+	return nil
+}

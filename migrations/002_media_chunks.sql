@@ -13,3 +13,8 @@ CREATE TABLE media_chunk (
     text TEXT,     -- сам смысловой чанк
     UNIQUE(media_id, chunk_number)
 );
+
+ALTER TABLE media_chunk
+    ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    ADD COLUMN file_path TEXT,
+    ADD COLUMN created_at TIMESTAMPTZ DEFAULT now();

@@ -5,4 +5,6 @@ type MediaChunk struct {
 	MediaID     int    `db:"media_id"`
 	ChunkNumber int    `db:"chunk_number"`
 	Text        string `db:"text"`
+	FilePath    string `db:"file_path"`
+	Status      string `db:"status"`
 }
