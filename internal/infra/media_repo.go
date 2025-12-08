@@ -121,14 +121,16 @@ func (r *PostgresMediaRepo) GetLastCompletedChunk(ctx context.Context, mediaID i
 	)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
-			log.Printf("[DB][PREV] no prev chunk for media=%d", mediaID)
+			log.Printf("[DB][PREV] media=%d → no completed chunks", mediaID)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get last completed chunk: %w", err)
 	}
 
-	log.Printf("[DB][PREV] got chunk id=%d chunk_number=%d text=%q",
-		c.ID, c.ChunkNumber, trim(c.Text, 180),
+	log.Printf("[DB][PREV] media=%d got chunk=%d text=%q",
+		mediaID,
+		c.ChunkNumber,
+		trim(c.Text, 180),
 	)
 
 	return &c, nil
@@ -218,25 +220,29 @@ func (r *PostgresMediaRepo) InsertPendingChunk(
 // ================================================================
 func (r *PostgresMediaRepo) CompleteChunk(
 	ctx context.Context,
-	chunkID int,
+	mediaID int,
+	chunkNumber int,
 	text string,
 ) error {
 
-	log.Printf("[DB][COMPLETE] saving chunk id=%d text=%q", chunkID, trim(text, 180))
+	log.Printf("[DB][COMPLETE] saving media=%d chunk=%d text=%q",
+		mediaID, chunkNumber, trim(text, 180),
+	)
 
 	query := `
         UPDATE media_chunk
-        SET
-            text = $1,
-            status = 'done'
-        WHERE id = $2
+        SET text = $1, status = 'done'
+        WHERE media_id = $2
+          AND chunk_number = $3
     `
-
-	_, err := r.pool.Exec(ctx, query, text, chunkID)
+	_, err := r.pool.Exec(ctx, query, text, mediaID, chunkNumber)
 	if err != nil {
 		return fmt.Errorf("complete chunk: %w", err)
 	}
 
-	log.Printf("[DB][COMPLETE] saved chunk id=%d OK", chunkID)
+	log.Printf("[DB][COMPLETE] saved media=%d chunk=%d OK",
+		mediaID, chunkNumber,
+	)
+
 	return nil
 }

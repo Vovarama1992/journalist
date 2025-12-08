@@ -19,5 +19,10 @@ type MediaRepository interface {
 
 	// NEW for overlapped ingest
 	InsertPendingChunk(ctx context.Context, mediaID int, filePath string) (*models.MediaChunk, error)
-	CompleteChunk(ctx context.Context, chunkID int, text string) error
+	CompleteChunk(
+		ctx context.Context,
+		mediaID int,
+		chunkNumber int,
+		text string,
+	) error
 }

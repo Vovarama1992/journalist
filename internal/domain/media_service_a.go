@@ -186,8 +186,8 @@ func (m *MediaService) ingestOne(ctx context.Context, srcURL string) {
 	}
 	println("[GPT] out done")
 
-	// COMPLETE
-	err = m.repo.CompleteChunk(ctx, chunkID, proc)
+	// COMPLETE (FIX: передаём mediaID + chunkNumber)
+	err = m.repo.CompleteChunk(ctx, m.mediaID, chunkID, proc)
 	if err != nil {
 		println("[INGEST] save err → advance")
 		m.advance(chunkID)
