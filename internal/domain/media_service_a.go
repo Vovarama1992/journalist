@@ -56,42 +56,60 @@ func (m *MediaService) Events() <-chan ports.ChunkEvent { return m.events }
 // ========================================================================
 // PROCESS
 // ========================================================================
-func (m *MediaService) Process(ctx context.Context,
+func (m *MediaService) Process(
+	ctx context.Context,
 	srcURL string,
 	roomID string,
 	mediaID int,
 ) (*models.Media, error) {
 
 	m.roomID = roomID
-
 	var media *models.Media
 	var err error
 
+	// === CASE 1: открываем уже существующее media ===
 	if mediaID > 0 {
 		media, err = m.repo.GetMediaByID(ctx, mediaID)
 		if err != nil {
 			return nil, err
 		}
-		srcURL = media.SourceURL
-	} else {
-		media, err = m.repo.InsertMedia(ctx, &models.Media{
-			SourceURL: srcURL,
-			Type:      "audio",
-		})
-		if err != nil {
-			return nil, err
+		if media == nil {
+			return nil, fmt.Errorf("media not found")
 		}
-	}
-	m.mediaID = media.ID
 
-	last, _ := m.repo.GetLastChunk(ctx, media.ID)
-	if last != nil {
-		m.currentChunkID = last.ChunkNumber + 1
-	} else {
-		m.currentChunkID = 1
+		// ВАЖНО: использовать URL, который был сохранён ранее
+		srcURL = media.SourceURL
+
+		m.mediaID = media.ID
+
+		// Вычисляем правильный next chunk ID
+		last, _ := m.repo.GetLastChunk(ctx, media.ID)
+		if last != nil {
+			m.currentChunkID = last.ChunkNumber + 1
+		} else {
+			m.currentChunkID = 1
+		}
+
+		// Запускаем ingestLoop для продолжения
+		go m.ingestLoop(ctx, srcURL)
+
+		return media, nil
 	}
+
+	// === CASE 2: новое media ===
+	media, err = m.repo.InsertMedia(ctx, &models.Media{
+		SourceURL: srcURL,
+		Type:      "audio",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	m.mediaID = media.ID
+	m.currentChunkID = 1
 
 	go m.ingestLoop(ctx, srcURL)
+
 	return media, nil
 }
 
