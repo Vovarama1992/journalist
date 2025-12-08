@@ -69,6 +69,8 @@ func (r *PostgresMediaRepo) GetLastChunk(ctx context.Context, mediaID int) (*mod
 		SELECT id, media_id, chunk_number, text
 		FROM media_chunk
 		WHERE media_id = $1
+		  AND text IS NOT NULL
+		  AND text <> ''
 		ORDER BY chunk_number DESC
 		LIMIT 1
 	`
@@ -81,13 +83,11 @@ func (r *PostgresMediaRepo) GetLastChunk(ctx context.Context, mediaID int) (*mod
 		&c.ChunkNumber,
 		&c.Text,
 	)
-
 	if err != nil {
-		// если нет ни одного чанка — вернём (nil, nil)
 		if err.Error() == "no rows in result set" {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("get last chunk: %w", err)
+		return nil, fmt.Errorf("get last non-empty chunk: %w", err)
 	}
 
 	return &c, nil
