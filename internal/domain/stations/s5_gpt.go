@@ -29,22 +29,19 @@ func trim(s string, max int) string {
 }
 
 func (s *S5GPT) Run(ctx context.Context, prev, raw string) (string, error) {
-	// ---- INPUT LOG ----
-	pPrev := trim(prev, maxPrevPreview)
-	pRaw := trim(raw, maxRawPreview)
-
-	log.Printf("[S5] run prev=%q raw=%q", pPrev, pRaw)
+	// ---- INPUT LOGS (то, что GPT получает) ----
+	log.Printf("[S5][PREV] %q", trim(prev, maxPrevPreview))
+	log.Printf("[S5][RAW ] %q", trim(raw, maxRawPreview))
 
 	// ---- CALL GPT ----
 	out, err := s.gpt.ProcessChunk(ctx, prev, raw)
 	if err != nil {
-		log.Printf("[S5] err=%v", err)
+		log.Printf("[S5][ERR ] %v", err)
 		return "", err
 	}
 
-	// ---- OUTPUT LOG ----
-	pOut := trim(out, maxOutPreview)
-	log.Printf("[S5] ok gpt=%q", pOut)
+	// ---- OUTPUT LOG (что GPT вернул — human readable) ----
+	log.Printf("[S5][HUMAN] %q", trim(out, maxOutPreview))
 
 	return out, nil
 }
