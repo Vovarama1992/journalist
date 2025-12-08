@@ -199,12 +199,17 @@ func (m *MediaService) ingestOne(ctx context.Context, srcURL string) {
 	// -------- S5 GPT --------
 	println("[GPT] in raw")
 	proc, err := m.s5.Run(ctx, prevText, raw)
+
+	// главное изменение:
 	if err != nil || proc == "" {
-		proc = raw
+		println("[GPT] empty → skip (NO SAVE)")
+		m.advance(chunkID)
+		return
 	}
+
 	println("[GPT] out done")
 
-	// COMPLETE (FIX: передаём mediaID + chunkNumber)
+	// COMPLETE
 	err = m.repo.CompleteChunk(ctx, m.mediaID, chunkID, proc)
 	if err != nil {
 		println("[INGEST] save err → advance")
