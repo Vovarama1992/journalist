@@ -236,8 +236,11 @@ func (m *MediaService) createPendingChunk(ctx context.Context, pcm []byte) (int,
 	}
 
 	m.mu.Lock()
-	m.pending[chunk.ID] = path
+	if m.currentChunkID == 0 {
+		// значит это самый первый pending
+		m.currentChunkID = chunk.ChunkNumber
+	}
 	m.mu.Unlock()
 
-	return chunk.ID, path, nil
+	return chunk.ChunkNumber, path, nil
 }
