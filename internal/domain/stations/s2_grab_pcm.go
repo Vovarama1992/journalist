@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os/exec"
 )
 
@@ -17,7 +16,8 @@ func NewS2GrabPCM() *S2GrabPCM {
 }
 
 func (s *S2GrabPCM) Run(ctx context.Context, audioURL string) ([]byte, error) {
-	log.Printf("[S2] run audioURL=%s", audioURL)
+
+	println("[S2] start")
 
 	cmd := exec.CommandContext(ctx,
 		"ffmpeg",
@@ -32,28 +32,22 @@ func (s *S2GrabPCM) Run(ctx context.Context, audioURL string) ([]byte, error) {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		println("[S2] fail")
 		return nil, fmt.Errorf("[S2] stdout pipe: %w", err)
 	}
 
+	// ВОЗВРАЩАЕМ как было — ЧИТАЕМ stderr (НО БЕЗ ЛОГОВ)
 	stderr, _ := cmd.StderrPipe()
+	go func() {
+		b, _ := io.ReadAll(stderr)
+		_ = b // глотаем, не логируем
+	}()
 
 	if err := cmd.Start(); err != nil {
+		println("[S2] fail")
 		return nil, fmt.Errorf("[S2] ffmpeg start: %w", err)
 	}
 
-	// читаем stderr коротко (как раньше)
-	go func() {
-		b, _ := io.ReadAll(stderr)
-		if len(b) > 0 {
-			msg := string(b)
-			if len(msg) > maxS2ErrPreview {
-				msg = msg[:maxS2ErrPreview] + "…"
-			}
-			log.Printf("[S2] stderr: %s", msg)
-		}
-	}()
-
-	// ----------- FIX: корректное чтение stdout с ctx -----------
 	var pcm []byte
 	buf := make([]byte, 4096)
 
@@ -61,12 +55,10 @@ readLoop:
 	for {
 		select {
 		case <-ctx.Done():
-			// убьёт ffmpeg, stdout закроется, завершаем
 			_ = cmd.Process.Kill()
 			return nil, ctx.Err()
 
 		default:
-
 		}
 
 		n, err := stdout.Read(buf)
@@ -78,18 +70,18 @@ readLoop:
 			if err == io.EOF {
 				break readLoop
 			}
+			println("[S2] fail")
 			return nil, fmt.Errorf("[S2] read pcm: %w", err)
 		}
 	}
-	// ----------------------------------------------------------
 
 	_ = cmd.Wait()
 
 	if len(pcm) == 0 {
-		log.Printf("[S2] empty pcm")
+		println("[S2] fail")
 		return pcm, nil
 	}
 
-	log.Printf("[S2] ok pcm=%d bytes", len(pcm))
+	println("[S2] ok")
 	return pcm, nil
 }

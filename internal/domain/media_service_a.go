@@ -3,7 +3,6 @@ package domain
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -25,13 +24,14 @@ type MediaService struct {
 
 	mu             sync.Mutex
 	currentChunkID int
-	pending        map[int]string // chunkID → filePath
+	pending        map[int]string
 	mediaID        int
 	roomID         string
 	events         chan ports.ChunkEvent
 }
 
-func NewMediaService(repo ports.MediaRepository,
+func NewMediaService(
+	repo ports.MediaRepository,
 	s1 *stations.S1ResolveURL,
 	s2 *stations.S2GrabPCM,
 	s3 *stations.S3PCMtoWAV,
@@ -54,7 +54,7 @@ func NewMediaService(repo ports.MediaRepository,
 func (m *MediaService) Events() <-chan ports.ChunkEvent { return m.events }
 
 // ========================================================================
-// START PROCESS
+// PROCESS
 // ========================================================================
 func (m *MediaService) Process(ctx context.Context,
 	srcURL string,
@@ -96,7 +96,7 @@ func (m *MediaService) Process(ctx context.Context,
 }
 
 // ========================================================================
-// IN GEST LOOP — запускаем ingestOne каждые 8 секунд
+// LOOP
 // ========================================================================
 func (m *MediaService) ingestLoop(ctx context.Context, srcURL string) {
 
@@ -114,85 +114,82 @@ func (m *MediaService) ingestLoop(ctx context.Context, srcURL string) {
 }
 
 // ========================================================================
-// ONE INGEST — снимает 15 сек PCM, создаёт pending chunk
+// ONE INGEST
 // ========================================================================
 func (m *MediaService) ingestOne(ctx context.Context, srcURL string) {
 
 	// -------- S1 --------
 	audioURL, err := m.s1.Run(ctx, srcURL)
-	if err != nil {
-		log.Printf("[INGEST] S1 err=%v", err)
+	if err != nil || audioURL == "" {
+		println("[S1] fail")
 		return
 	}
+	println("[S1] ok")
 
 	// -------- S2 --------
 	pcm, err := m.s2.Run(ctx, audioURL)
 	if err != nil || len(pcm) == 0 {
-		log.Printf("[INGEST] S2 err=%v", err)
+		println("[S2] no pcm")
 		return
 	}
+	println("[S2] ok bytes=", len(pcm))
 
 	chunkID, filePath, err := m.createPendingChunk(ctx, pcm)
 	if err != nil {
-		log.Printf("[INGEST] pending create err=%v", err)
+		println("[INGEST] pending create fail")
 		return
 	}
+	println("[INGEST] pending chunk:", chunkID)
 
-	// =====================================================================
-	// WAIT FOR TURN — блок до тех пор, пока chunkID != currentChunkID
-	// =====================================================================
+	// WAIT TURN
 	for {
 		m.mu.Lock()
 		ok := (chunkID == m.currentChunkID)
 		m.mu.Unlock()
-
 		if ok {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 
-	// =====================================================================
-	// PROCESS CURRENT CHUNK — S3 / S4 / S5
-	// =====================================================================
+	// -------- S3 --------
 	wav := m.s3.Run(pcm)
+	println("[S3] wav ok")
 
+	// -------- S4 --------
 	raw, err := m.s4.Run(ctx, wav)
 	if err != nil {
-		log.Printf("[INGEST] S4 err=%v → SKIP but advance current", err)
+		println("[S4] err → skip")
 		m.advance(chunkID)
 		return
 	}
 	if raw == "" {
-		log.Printf("[INGEST] S4 empty → SKIP but advance current")
+		println("[S4] empty → skip")
 		m.advance(chunkID)
 		return
 	}
+	println("[S4] text ok")
 
+	// PREV CHUNK
 	prevChunk, _ := m.repo.GetLastCompletedChunk(ctx, m.mediaID)
 	prevText := ""
 	if prevChunk != nil {
-		log.Printf("[S5][PREV_CHUNK] id=%d num=%d text=%q",
-			prevChunk.ID,
-			prevChunk.ChunkNumber,
-			prevChunk.Text,
-		)
 		prevText = prevChunk.Text
-	} else {
-		log.Printf("[S5][PREV_CHUNK] none")
 	}
+	println("[S5] prev ok")
 
+	// -------- S5 GPT --------
+	println("[GPT] in raw")
 	proc, err := m.s5.Run(ctx, prevText, raw)
 	if err != nil || proc == "" {
 		proc = raw
 	}
+	println("[GPT] out done")
 
-	// =====================================================================
-	// COMPLETE CHUNK
-	// =====================================================================
+	// COMPLETE
 	err = m.repo.CompleteChunk(ctx, chunkID, proc)
 	if err != nil {
-		log.Printf("[INGEST] save err=%v → advance current", err)
+		println("[INGEST] save err → advance")
 		m.advance(chunkID)
 		return
 	}
@@ -206,11 +203,12 @@ func (m *MediaService) ingestOne(ctx context.Context, srcURL string) {
 		Text:        proc,
 	}
 
+	println("[INGEST] done chunk:", chunkID)
 	m.advance(chunkID)
 }
 
 // ========================================================================
-// ADVANCE — всегда продвигает указатель currentChunkID
+// ADVANCE
 // ========================================================================
 func (m *MediaService) advance(id int) {
 	m.mu.Lock()
@@ -220,10 +218,11 @@ func (m *MediaService) advance(id int) {
 		m.currentChunkID++
 	}
 	delete(m.pending, id)
+	println("[ADVANCE] →", m.currentChunkID)
 }
 
 // ========================================================================
-// CREATE PENDING CHUNK
+// CREATE PENDING
 // ========================================================================
 func (m *MediaService) createPendingChunk(ctx context.Context, pcm []byte) (int, string, error) {
 
@@ -244,10 +243,11 @@ func (m *MediaService) createPendingChunk(ctx context.Context, pcm []byte) (int,
 
 	m.mu.Lock()
 	if m.currentChunkID == 0 {
-		// значит это самый первый pending
 		m.currentChunkID = chunk.ChunkNumber
 	}
 	m.mu.Unlock()
+
+	println("[PENDING] chunk created:", chunk.ChunkNumber)
 
 	return chunk.ChunkNumber, path, nil
 }

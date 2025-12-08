@@ -3,7 +3,6 @@ package ws
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"github.com/Vovarama1992/journalist/internal/ports"
@@ -34,37 +33,37 @@ func WSHandler(
 			roomID = "default"
 		}
 
-		log.Printf("[WS][IN] start room=%s", roomID)
+		// минимальный лог
+		println("[WS] start room:", roomID)
 		hub.Register(roomID, conn)
 
-		// правильный defer
 		defer func() {
-			cancelWS() // <- ключевой фикс
-			log.Printf("[WS][OUT] room=%s", roomID)
+			cancelWS()
+			println("[WS] end room:", roomID)
 			hub.Unregister(roomID, conn)
 		}()
-		// читаем init
+
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("[WS][IN] read fail: %v", err)
+			println("[WS] read init fail")
 			return
 		}
 
 		var req startMsg
 		if err := json.Unmarshal(raw, &req); err != nil {
-			log.Printf("[WS] bad json: %v", err)
+			println("[WS] bad json")
 			hub.SendToRoom(roomID, []byte(`{"status":"error"}`))
 			return
 		}
 
-		log.Printf("[WS][INSIDE] url=%s mediaID=%d", req.URL, req.MediaID)
+		// лог только факта
+		println("[WS] init url:", req.URL, "mediaID:", req.MediaID)
 		hub.SendToRoom(roomID, []byte(`{"status":"processing_started"}`))
 
-		// pipeline
 		go func() {
 			mediaObj, err := media.Process(ctxWS, req.URL, roomID, req.MediaID)
 			if err != nil {
-				log.Printf("[WS][OUT] media error: %v", err)
+				println("[WS] media error")
 				hub.SendToRoom(roomID, []byte(`{"status":"error"}`))
 				return
 			}
@@ -77,11 +76,10 @@ func WSHandler(
 			hub.SendToRoom(roomID, b)
 		}()
 
-		// держим соединение живым
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
-				log.Printf("[WS][OUT] disconnect room=%s", roomID)
+				println("[WS] disconnect room:", roomID)
 				return
 			}
 		}

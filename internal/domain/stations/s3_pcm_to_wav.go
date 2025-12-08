@@ -3,7 +3,6 @@ package stations
 import (
 	"bytes"
 	"encoding/binary"
-	"log"
 )
 
 type S3PCMtoWAV struct{}
@@ -11,7 +10,8 @@ type S3PCMtoWAV struct{}
 func NewS3PCMtoWAV() *S3PCMtoWAV { return &S3PCMtoWAV{} }
 
 func (s *S3PCMtoWAV) Run(pcm []byte) []byte {
-	log.Printf("[S3] run pcm=%d bytes", len(pcm))
+
+	println("[S3] start")
 
 	const (
 		sampleRate     = 16000
@@ -45,6 +45,6 @@ func (s *S3PCMtoWAV) Run(pcm []byte) []byte {
 
 	wav := buf.Bytes()
 
-	log.Printf("[S3] ok wav=%d bytes", len(wav))
+	println("[S3] ok")
 	return wav
 }

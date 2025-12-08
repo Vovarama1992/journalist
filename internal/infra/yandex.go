@@ -34,6 +34,7 @@ type yandexResponse struct {
 }
 
 func (s *YandexSTTService) Recognize(ctx context.Context, pcm []byte) (string, []byte, error) {
+
 	url := "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize" +
 		"?lang=ru-RU&format=lpcm&sampleRateHertz=16000"
 
@@ -51,14 +52,20 @@ func (s *YandexSTTService) Recognize(ctx context.Context, pcm []byte) (string, [
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	rawResp, _ := io.ReadAll(resp.Body)
 
-	var r yandexResponse
-	_ = json.Unmarshal(raw, &r)
-
-	if r.Error != "" {
-		return "", raw, fmt.Errorf(r.Error)
+	// статус проверяем корректно
+	if resp.StatusCode != 200 {
+		return "", rawResp, fmt.Errorf("yandex stt http %d", resp.StatusCode)
 	}
 
-	return r.Result, raw, nil
+	var parsed yandexResponse
+	_ = json.Unmarshal(rawResp, &parsed)
+
+	// ошибка Яндекса
+	if parsed.Error != "" {
+		return "", rawResp, fmt.Errorf(parsed.Error)
+	}
+
+	return parsed.Result, rawResp, nil
 }
