@@ -93,6 +93,34 @@ func (r *PostgresMediaRepo) GetLastChunk(ctx context.Context, mediaID int) (*mod
 	return &c, nil
 }
 
+func (r *PostgresMediaRepo) GetLastCompletedChunk(ctx context.Context, mediaID int) (*models.MediaChunk, error) {
+	query := `
+		SELECT id, media_id, chunk_number, text
+		FROM media_chunk
+		WHERE media_id = $1
+		  AND status = 'done'
+		ORDER BY chunk_number DESC
+		LIMIT 1
+	`
+
+	var c models.MediaChunk
+
+	err := r.pool.QueryRow(ctx, query, mediaID).Scan(
+		&c.ID,
+		&c.MediaID,
+		&c.ChunkNumber,
+		&c.Text,
+	)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get last completed chunk: %w", err)
+	}
+
+	return &c, nil
+}
+
 func (r *PostgresMediaRepo) GetMediaByID(ctx context.Context, id int) (*models.Media, error) {
 	query := `
 		SELECT id, source_url, media_type, created_at

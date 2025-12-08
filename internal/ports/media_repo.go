@@ -15,6 +15,7 @@ type MediaRepository interface {
 	GetMediaByID(ctx context.Context, id int) (*models.Media, error)
 	GetMediaHistory(ctx context.Context, mediaID int) (string, error)
 	GetLastChunk(ctx context.Context, mediaID int) (*models.MediaChunk, error)
+	GetLastCompletedChunk(ctx context.Context, mediaID int) (*models.MediaChunk, error)
 
 	// NEW for overlapped ingest
 	InsertPendingChunk(ctx context.Context, mediaID int, filePath string) (*models.MediaChunk, error)

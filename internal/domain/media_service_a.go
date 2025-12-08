@@ -169,10 +169,17 @@ func (m *MediaService) ingestOne(ctx context.Context, srcURL string) {
 		return
 	}
 
-	prevChunk, _ := m.repo.GetLastChunk(ctx, m.mediaID)
+	prevChunk, _ := m.repo.GetLastCompletedChunk(ctx, m.mediaID)
 	prevText := ""
 	if prevChunk != nil {
+		log.Printf("[S5][PREV_CHUNK] id=%d num=%d text=%q",
+			prevChunk.ID,
+			prevChunk.ChunkNumber,
+			prevChunk.Text,
+		)
 		prevText = prevChunk.Text
+	} else {
+		log.Printf("[S5][PREV_CHUNK] none")
 	}
 
 	proc, err := m.s5.Run(ctx, prevText, raw)
