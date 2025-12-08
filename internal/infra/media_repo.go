@@ -3,6 +3,7 @@ package infra
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/Vovarama1992/journalist/internal/models"
@@ -12,6 +13,13 @@ import (
 
 type PostgresMediaRepo struct {
 	pool *pgxpool.Pool
+}
+
+func trim(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 func NewPostgresMediaRepo(pool *pgxpool.Pool) ports.MediaRepository {
@@ -95,13 +103,13 @@ func (r *PostgresMediaRepo) GetLastChunk(ctx context.Context, mediaID int) (*mod
 
 func (r *PostgresMediaRepo) GetLastCompletedChunk(ctx context.Context, mediaID int) (*models.MediaChunk, error) {
 	query := `
-		SELECT id, media_id, chunk_number, text
-		FROM media_chunk
-		WHERE media_id = $1
-		  AND status = 'done'
-		ORDER BY chunk_number DESC
-		LIMIT 1
-	`
+        SELECT id, media_id, chunk_number, text
+        FROM media_chunk
+        WHERE media_id = $1
+          AND status = 'done'
+        ORDER BY chunk_number DESC
+        LIMIT 1
+    `
 
 	var c models.MediaChunk
 
@@ -113,10 +121,15 @@ func (r *PostgresMediaRepo) GetLastCompletedChunk(ctx context.Context, mediaID i
 	)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
+			log.Printf("[DB][PREV] no prev chunk for media=%d", mediaID)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get last completed chunk: %w", err)
 	}
+
+	log.Printf("[DB][PREV] got chunk id=%d chunk_number=%d text=%q",
+		c.ID, c.ChunkNumber, trim(c.Text, 180),
+	)
 
 	return &c, nil
 }
@@ -209,17 +222,21 @@ func (r *PostgresMediaRepo) CompleteChunk(
 	text string,
 ) error {
 
+	log.Printf("[DB][COMPLETE] saving chunk id=%d text=%q", chunkID, trim(text, 180))
+
 	query := `
-		UPDATE media_chunk
-		SET
-			text = $1,
-			status = 'done'
-		WHERE id = $2
-	`
+        UPDATE media_chunk
+        SET
+            text = $1,
+            status = 'done'
+        WHERE id = $2
+    `
 
 	_, err := r.pool.Exec(ctx, query, text, chunkID)
 	if err != nil {
 		return fmt.Errorf("complete chunk: %w", err)
 	}
+
+	log.Printf("[DB][COMPLETE] saved chunk id=%d OK", chunkID)
 	return nil
 }
