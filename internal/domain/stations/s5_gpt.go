@@ -32,6 +32,6 @@ func (s *S5GPT) Run(ctx context.Context, prev, raw string) (string, error) {
 		return "", err
 	}
 
-	log.Printf("[S5][OUT] %q", trim(out, 220))
+	log.Printf("[S5][HUMN] %q", trim(out, 220))
 	return out, nil
 }

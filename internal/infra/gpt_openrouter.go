@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/Vovarama1992/journalist/internal/ports"
 )
@@ -23,6 +24,11 @@ func NewGPTClient() ports.GPTService {
 		apiKey: key,
 		client: &http.Client{},
 	}
+}
+
+// sanitize: убираем битый UTF-8, чтобы JSON не ломался
+func sanitize(s string) string {
+	return strings.ToValidUTF8(s, "")
 }
 
 type orMessage struct {
@@ -51,6 +57,10 @@ func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string,
 		return "", fmt.Errorf("no OPENROUTER_API_KEY")
 	}
 
+	// Приводим ввод к валидному UTF-8 (иначе OpenRouter режет JSON и GPT возвращает пусто)
+	prev = sanitize(prev)
+	raw = sanitize(raw)
+
 	systemPrompt := `Тебе даются два текста:
 
 previous — уже готовый фрагмент.
@@ -67,30 +77,20 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 
 Если raw — это прямое продолжение того же говорящего:
 — Найти максимальное совпадение между концом previous и началом raw.
-— Если начало raw даже частично, примерно или смыслово дублирует конец previous — считать это повтором и вырезать полностью. Неважно, совпадают ли слова буквально или только по смыслу.
-— Полностью удалить совпадающее или частично совпадающее начало.
-— Продолжить фрагмент с маленькой буквы, без имени говорящего.
-— Текст переписать в нормальную речь.
+— Если начало raw даже частично, примерно или смыслово дублирует конец previous — считать это повтором и вырезать полностью.
+— Продолжить фрагмент с маленькой буквы.
+— Переписать в нормальную речь.
 
-Если raw звучит как новая реплика (новая интонация, «ну», «а», «так», «ладно», «короче», «слушай», «итак» и т.п.):
+Если raw звучит как новая реплика:
 — Начать строго с новой строки.
 — Строка 1: СПИКЕР:
-— Строка 2: уже переписанный, чистый, гладкий текст (новый абзац).
+— Строка 2: чистый текст.
 — Никаких сшиваний с previous.
-— Никакого повторения previous.
 
-Стиль:
-— Плавная, нормальная, человеческая речь.
-— Никаких повторов.
-— Выправлять синтаксис.
-— Разбивать на короткие абзацы.
-— Смысл сохранять.
-
-Формат вывода:
+Формат:
 — Только новый чанк.
-— Никаких HTML.
-— Никаких служебных слов.
-— Один чистый читабельный фрагмент, готовый к склейке.
+— Без HTML.
+— Один читабельный фрагмент.
 `
 
 	body := orRequest{
@@ -117,6 +117,7 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 
 	resp, err := g.client.Do(req)
 	if err != nil {
+		println("[GPT] fail")
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -124,17 +125,22 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 	rawResp, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != 200 {
+		println("[GPT] fail")
 		return "", fmt.Errorf("gpt status %d", resp.StatusCode)
 	}
 
 	var out orResponse
 	if err := json.Unmarshal(rawResp, &out); err != nil {
+		println("[GPT] fail")
 		return "", err
 	}
 
 	if len(out.Choices) == 0 {
+		println("[GPT] fail")
 		return "", fmt.Errorf("no choices")
 	}
+
+	println("[GPT] ok")
 
 	return out.Choices[0].Message.Content, nil
 }
