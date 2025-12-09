@@ -67,6 +67,10 @@ func (m *MediaService) Process(
 	var media *models.Media
 	var err error
 
+	if mediaID > 0 && srcURL != "" {
+		mediaID = 0
+	}
+
 	// === CASE 1: открываем уже существующее media ===
 	if mediaID > 0 {
 		media, err = m.repo.GetMediaByID(ctx, mediaID)

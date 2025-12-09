@@ -10,4 +10,4 @@ CREATE TABLE IF NOT EXISTS journal_auth (
 
 -- Вставляем дефолтный пароль (замени при необходимости)
 INSERT INTO journal_auth (password)
-VALUES ('sdf^7dsf6&&4&');
+VALUES ('rossaprimavera');
