@@ -1,4 +1,10 @@
-.PHONY: refresh build up down logs app-logs commit migrate db build-front
+.PHONY: refresh full-refresh build up down logs app-logs commit migrate db build-front
+
+# --- миграции ---
+migrate:
+	cat migrations/*.sql | docker exec -i journalist_db psql \
+		-U $${POSTGRES_USER:-journalist} \
+		-d $${POSTGRES_DB:-journalist}
 
 # --- быстрый диплой ---
 refresh:
@@ -6,6 +12,16 @@ refresh:
 	docker compose build app
 	docker compose stop app
 	docker compose up -d --no-deps app
+	$(MAKE) migrate
+	docker compose logs -f app
+
+# --- полный рефреш (без удаления volumes!) ---
+full-refresh:
+	git pull origin main
+	docker compose down
+	docker compose build --no-cache
+	docker compose up -d
+	$(MAKE) migrate
 	docker compose logs -f app
 
 # --- сборка фронта ---
@@ -16,7 +32,7 @@ build-front:
 	rm -rf ../journalist/dist/* && \
 	cp -r dist/* ../journalist/dist/
 
-# --- сборка контейнеров ---
+# --- сборка всех контейнеров ---
 build:
 	docker compose build
 
@@ -41,12 +57,6 @@ commit:
 	git add .
 	git commit -m "$${m:-update}"
 	git push origin main
-
-# --- миграции ---
-migrate:
-	cat migrations/*.sql | docker exec -i journalist_db psql \
-		-U $${POSTGRES_USER:-journalist} \
-		-d $${POSTGRES_DB:-journalist}
 
 # --- зайти в PostgreSQL ---
 db:
