@@ -34,8 +34,13 @@ RUN pip3 install --break-system-packages yt-dlp
 WORKDIR /app
 COPY --from=builder /app/server /app/server
 
+# --- entrypoint ---
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 EXPOSE 8080
 
 RUN which node && node -v && which yt-dlp && yt-dlp --version
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/app/server"]
