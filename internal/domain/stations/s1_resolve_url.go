@@ -3,6 +3,7 @@ package stations
 import (
 	"context"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 )
@@ -13,20 +14,24 @@ func NewS1ResolveURL() *S1ResolveURL { return &S1ResolveURL{} }
 
 func (s *S1ResolveURL) Run(ctx context.Context, pageURL string) (string, error) {
 
-	println("[S1] start")
+	log.Printf("[S1][START] page=%q", pageURL)
 
 	cmd := exec.CommandContext(ctx,
 		"yt-dlp", "--no-playlist", "-g", pageURL,
 	)
 
 	out, err := cmd.CombinedOutput()
+
+	// логируем сырой вывод
+	log.Printf("[S1][RAW] %q", trim(string(out), 500))
+
 	if err != nil {
-		println("[S1] fail")
+		log.Printf("[S1][ERR-exec] %v", err)
 	}
 
 	raw := strings.TrimSpace(string(out))
 	if raw == "" {
-		println("[S1] fail")
+		log.Printf("[S1][ERR] empty output")
 		return "", fmt.Errorf("empty yt-dlp output")
 	}
 
@@ -42,10 +47,10 @@ func (s *S1ResolveURL) Run(ctx context.Context, pageURL string) (string, error) 
 	}
 
 	if audioURL == "" {
-		println("[S1] fail")
+		log.Printf("[S1][ERR] parsed url empty")
 		return "", fmt.Errorf("invalid audio url")
 	}
 
-	println("[S1] ok")
+	log.Printf("[S1][OK] url=%q", audioURL)
 	return audioURL, nil
 }
