@@ -49,7 +49,6 @@ type orResponse struct {
 }
 
 func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string, error) {
-
 	println("[GPT] start")
 
 	if g.apiKey == "" {
@@ -60,7 +59,6 @@ func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string,
 	prev = sanitize(prev)
 	raw = sanitize(raw)
 
-	// ЛОГИРУЕМ ВХОД
 	fmt.Printf("[GPT][IN-prev] %q\n", prev)
 	fmt.Printf("[GPT][IN-raw ] %q\n", raw)
 
@@ -113,50 +111,69 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 
 	j, _ := json.Marshal(body)
 
-	// ЛОГИРУЕМ JSON КОТОРЫЙ ОТПРАВЛЯЕМ
-	fmt.Printf("[GPT][REQ] %s\n", j)
+	// ===== RETRY LOOP =====
+	for attempt := 1; attempt <= 3; attempt++ {
 
-	req, _ := http.NewRequestWithContext(ctx,
-		"POST",
-		"https://openrouter.ai/api/v1/chat/completions",
-		bytes.NewReader(j),
-	)
+		fmt.Printf("[GPT][REQ attempt=%d] %s\n", attempt, j)
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+g.apiKey)
-	req.Header.Set("HTTP-Referer", "https://aifulls.com")
-	req.Header.Set("X-Title", "journalist-transcriber")
+		req, _ := http.NewRequestWithContext(ctx,
+			"POST",
+			"https://openrouter.ai/api/v1/chat/completions",
+			bytes.NewReader(j),
+		)
 
-	resp, err := g.client.Do(req)
-	if err != nil {
-		fmt.Printf("[GPT][HTTP-ERR] %v\n", err)
-		return "", err
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+g.apiKey)
+		req.Header.Set("HTTP-Referer", "https://aifulls.com")
+		req.Header.Set("X-Title", "journalist-transcriber")
+
+		resp, err := g.client.Do(req)
+		if err != nil {
+			fmt.Printf("[GPT][HTTP-ERR attempt=%d] %v\n", attempt, err)
+			continue
+		}
+
+		rawResp, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		fmt.Printf("[GPT][RESP-CODE attempt=%d] %d\n", attempt, resp.StatusCode)
+
+		// логируем все заголовки
+		for k, v := range resp.Header {
+			fmt.Printf("[GPT][HDR] %s: %v\n", k, v)
+		}
+
+		fmt.Printf("[GPT][RESP-BODY attempt=%d] %s\n", attempt, rawResp)
+
+		// bad HTTP status
+		if resp.StatusCode != 200 {
+			fmt.Printf("[GPT][BAD STATUS attempt=%d]\n", attempt)
+			continue
+		}
+
+		// empty body
+		if len(rawResp) == 0 {
+			fmt.Printf("[GPT][EMPTY BODY attempt=%d]\n", attempt)
+			continue
+		}
+
+		var out orResponse
+		if err := json.Unmarshal(rawResp, &out); err != nil {
+			fmt.Printf("[GPT][JSON-ERR attempt=%d] %v\n", attempt, err)
+			continue
+		}
+
+		if len(out.Choices) == 0 {
+			fmt.Printf("[GPT][NO CHOICES attempt=%d]\n", attempt)
+			continue
+		}
+
+		result := out.Choices[0].Message.Content
+
+		fmt.Printf("[GPT][OUT attempt=%d] %q\n", attempt, result)
+		println("[GPT] ok")
+		return result, nil
 	}
-	defer resp.Body.Close()
 
-	rawResp, _ := io.ReadAll(resp.Body)
-
-	// ЛОГИРУЕМ ВСЁ, что вернул OpenRouter
-	fmt.Printf("[GPT][RESP-CODE] %d\n", resp.StatusCode)
-	fmt.Printf("[GPT][RESP-BODY] %s\n", rawResp)
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("gpt status %d", resp.StatusCode)
-	}
-
-	var out orResponse
-	if err := json.Unmarshal(rawResp, &out); err != nil {
-		fmt.Printf("[GPT][JSON-ERR] %v\n", err)
-		return "", err
-	}
-
-	if len(out.Choices) == 0 {
-		fmt.Println("[GPT][ERR] no choices")
-		return "", fmt.Errorf("no choices")
-	}
-
-	fmt.Printf("[GPT][OUT] %q\n", out.Choices[0].Message.Content)
-	println("[GPT] ok")
-
-	return out.Choices[0].Message.Content, nil
+	return "", fmt.Errorf("gpt failed after retries")
 }
