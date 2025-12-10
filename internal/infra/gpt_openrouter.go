@@ -26,7 +26,7 @@ func NewGPTClient() ports.GPTService {
 	}
 }
 
-// sanitize: убираем битый UTF-8, чтобы JSON не ломался
+// sanitize: убираем битый UTF-8
 func sanitize(s string) string {
 	return strings.ToValidUTF8(s, "")
 }
@@ -138,27 +138,26 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 
 		fmt.Printf("[GPT][RESP-CODE attempt=%d] %d\n", attempt, resp.StatusCode)
 
-		// логируем все заголовки
+		// логируем заголовки
 		for k, v := range resp.Header {
 			fmt.Printf("[GPT][HDR] %s: %v\n", k, v)
 		}
 
 		fmt.Printf("[GPT][RESP-BODY attempt=%d] %s\n", attempt, rawResp)
 
-		// bad HTTP status
-		if resp.StatusCode != 200 {
-			fmt.Printf("[GPT][BAD STATUS attempt=%d]\n", attempt)
+		// FIXME: TRIM LEADING WHITESPACE / NEWLINES
+		cleanBody := bytes.TrimLeftFunc(rawResp, func(r rune) bool {
+			return r == '\n' || r == '\r' || r == ' ' || r == '\t'
+		})
+
+		if len(cleanBody) == 0 {
+			fmt.Printf("[GPT][EMPTY CLEAN BODY attempt=%d]\n", attempt)
 			continue
 		}
 
-		// empty body
-		if len(rawResp) == 0 {
-			fmt.Printf("[GPT][EMPTY BODY attempt=%d]\n", attempt)
-			continue
-		}
-
+		// try unmarshal
 		var out orResponse
-		if err := json.Unmarshal(rawResp, &out); err != nil {
+		if err := json.Unmarshal(cleanBody, &out); err != nil {
 			fmt.Printf("[GPT][JSON-ERR attempt=%d] %v\n", attempt, err)
 			continue
 		}
