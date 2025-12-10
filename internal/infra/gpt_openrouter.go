@@ -53,13 +53,16 @@ func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string,
 	println("[GPT] start")
 
 	if g.apiKey == "" {
-		println("[GPT] fail")
+		println("[GPT] fail: no API KEY")
 		return "", fmt.Errorf("no OPENROUTER_API_KEY")
 	}
 
-	// Приводим ввод к валидному UTF-8 (иначе OpenRouter режет JSON и GPT возвращает пусто)
 	prev = sanitize(prev)
 	raw = sanitize(raw)
+
+	// ЛОГИРУЕМ ВХОД
+	fmt.Printf("[GPT][IN-prev] %q\n", prev)
+	fmt.Printf("[GPT][IN-raw ] %q\n", raw)
 
 	systemPrompt := `Тебе даются два текста:
 
@@ -110,6 +113,9 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 
 	j, _ := json.Marshal(body)
 
+	// ЛОГИРУЕМ JSON КОТОРЫЙ ОТПРАВЛЯЕМ
+	fmt.Printf("[GPT][REQ] %s\n", j)
+
 	req, _ := http.NewRequestWithContext(ctx,
 		"POST",
 		"https://openrouter.ai/api/v1/chat/completions",
@@ -123,29 +129,33 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 
 	resp, err := g.client.Do(req)
 	if err != nil {
-		println("[GPT] fail")
+		fmt.Printf("[GPT][HTTP-ERR] %v\n", err)
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	rawResp, _ := io.ReadAll(resp.Body)
 
+	// ЛОГИРУЕМ ВСЁ, что вернул OpenRouter
+	fmt.Printf("[GPT][RESP-CODE] %d\n", resp.StatusCode)
+	fmt.Printf("[GPT][RESP-BODY] %s\n", rawResp)
+
 	if resp.StatusCode != 200 {
-		println("[GPT] fail")
 		return "", fmt.Errorf("gpt status %d", resp.StatusCode)
 	}
 
 	var out orResponse
 	if err := json.Unmarshal(rawResp, &out); err != nil {
-		println("[GPT] fail")
+		fmt.Printf("[GPT][JSON-ERR] %v\n", err)
 		return "", err
 	}
 
 	if len(out.Choices) == 0 {
-		println("[GPT] fail")
+		fmt.Println("[GPT][ERR] no choices")
 		return "", fmt.Errorf("no choices")
 	}
 
+	fmt.Printf("[GPT][OUT] %q\n", out.Choices[0].Message.Content)
 	println("[GPT] ok")
 
 	return out.Choices[0].Message.Content, nil
