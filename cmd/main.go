@@ -32,6 +32,11 @@ func main() {
 		port = "8080"
 	}
 
+	cookieFile := os.Getenv("YTDLP_COOKIES_FILE")
+	if cookieFile == "" {
+		log.Println("WARN: YTDLP_COOKIES_FILE is not set; yt-dlp may fail on YouTube")
+	}
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		panic("DATABASE_URL is not set")
@@ -69,7 +74,7 @@ func main() {
 	gptClient := infra.NewGPTClient()
 
 	// STATIONS
-	s1 := stations.NewS1ResolveURL()
+	s1 := stations.NewS1ResolveURL(cookieFile)
 	s2 := stations.NewS2GrabPCM()
 	s3 := stations.NewS3PCMtoWAV()
 	s4 := stations.NewS4WAVtoText(stt)

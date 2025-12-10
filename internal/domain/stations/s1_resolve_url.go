@@ -8,49 +8,53 @@ import (
 	"strings"
 )
 
-type S1ResolveURL struct{}
+type S1ResolveURL struct {
+	cookieFile string
+}
 
-func NewS1ResolveURL() *S1ResolveURL { return &S1ResolveURL{} }
+func NewS1ResolveURL(cookieFile string) *S1ResolveURL {
+	return &S1ResolveURL{cookieFile: cookieFile}
+}
 
 func (s *S1ResolveURL) Run(ctx context.Context, pageURL string) (string, error) {
-
 	log.Printf("[S1][START] page=%q", pageURL)
 
-	cmd := exec.CommandContext(ctx,
-		"yt-dlp", "--no-playlist", "-g", pageURL,
-	)
+	args := []string{
+		"--no-playlist",
+		"-g",
+	}
 
+	// если куки есть → добавляем
+	if s.cookieFile != "" {
+		args = append(args, "--cookies", s.cookieFile)
+	}
+
+	args = append(args, pageURL)
+
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
 	out, err := cmd.CombinedOutput()
-
-	// логируем сырой вывод
-	log.Printf("[S1][RAW] %q", trim(string(out), 500))
 
 	if err != nil {
 		log.Printf("[S1][ERR-exec] %v", err)
 	}
 
 	raw := strings.TrimSpace(string(out))
+	log.Printf("[S1][RAW] %q", trim(raw, 280))
+
 	if raw == "" {
 		log.Printf("[S1][ERR] empty output")
 		return "", fmt.Errorf("empty yt-dlp output")
 	}
 
-	lines := strings.Split(raw, "\n")
-
-	var audioURL string
-	for _, ln := range lines {
+	// ищем первую http-строку
+	for _, ln := range strings.Split(raw, "\n") {
 		ln = strings.TrimSpace(ln)
 		if strings.HasPrefix(ln, "http") {
-			audioURL = ln
-			break
+			log.Print("[S1][OK]")
+			return ln, nil
 		}
 	}
 
-	if audioURL == "" {
-		log.Printf("[S1][ERR] parsed url empty")
-		return "", fmt.Errorf("invalid audio url")
-	}
-
-	log.Printf("[S1][OK] url=%q", audioURL)
-	return audioURL, nil
+	log.Printf("[S1][ERR] parsed url empty")
+	return "", fmt.Errorf("parsed url empty")
 }
