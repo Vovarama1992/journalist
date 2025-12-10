@@ -1,4 +1,3 @@
-# --- stage 1: builder ---
 FROM golang:1.25 AS builder
 WORKDIR /app
 
@@ -22,19 +21,18 @@ RUN curl -fsSL https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz -
     mv node-v20.11.1-linux-x64 /usr/local/node && \
     rm node.tar.xz
 
-# критично: прописываем node в PATH (иначе yt-dlp его НЕ видит)
 ENV PATH="/usr/local/node/bin:${PATH}"
 
-# проверка что node работает
 RUN node -v
 
-# --- устанавливаем yt-dlp ---
 RUN pip3 install --break-system-packages yt-dlp
 
 WORKDIR /app
 COPY --from=builder /app/server /app/server
 
-# --- entrypoint ---
+# <<< ВОТ ЭТА СТРОКА НУЖНА >>>
+COPY cookies.txt /app/cookies.txt
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
