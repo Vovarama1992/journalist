@@ -19,9 +19,8 @@ type GPTClient struct {
 }
 
 func NewGPTClient() ports.GPTService {
-	key := os.Getenv("OPENROUTER_API_KEY")
 	return &GPTClient{
-		apiKey: key,
+		apiKey: os.Getenv("OPENROUTER_API_KEY"),
 		client: &http.Client{},
 	}
 }
@@ -49,18 +48,12 @@ type orResponse struct {
 }
 
 func (g *GPTClient) ProcessChunk(ctx context.Context, prev, raw string) (string, error) {
-	println("[GPT] start")
-
 	if g.apiKey == "" {
-		println("[GPT] fail: no API KEY")
 		return "", fmt.Errorf("no OPENROUTER_API_KEY")
 	}
 
 	prev = sanitize(prev)
 	raw = sanitize(raw)
-
-	fmt.Printf("[GPT][IN-prev] %q\n", prev)
-	fmt.Printf("[GPT][IN-raw ] %q\n", raw)
 
 	systemPrompt := `Тебе даются два текста:
 
@@ -109,18 +102,21 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 		},
 	}
 
-	j, _ := json.Marshal(body)
+	j, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
 
-	// ===== RETRY LOOP =====
 	for attempt := 1; attempt <= 3; attempt++ {
-
-		fmt.Printf("[GPT][REQ attempt=%d] %s\n", attempt, j)
-
-		req, _ := http.NewRequestWithContext(ctx,
+		req, err := http.NewRequestWithContext(
+			ctx,
 			"POST",
 			"https://openrouter.ai/api/v1/chat/completions",
 			bytes.NewReader(j),
 		)
+		if err != nil {
+			continue
+		}
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+g.apiKey)
@@ -129,49 +125,29 @@ raw — сырой ASR-текст (грязный, с повторами, шум
 
 		resp, err := g.client.Do(req)
 		if err != nil {
-			fmt.Printf("[GPT][HTTP-ERR attempt=%d] %v\n", attempt, err)
 			continue
 		}
 
 		rawResp, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		fmt.Printf("[GPT][RESP-CODE attempt=%d] %d\n", attempt, resp.StatusCode)
-
-		// логируем заголовки
-		for k, v := range resp.Header {
-			fmt.Printf("[GPT][HDR] %s: %v\n", k, v)
-		}
-
-		fmt.Printf("[GPT][RESP-BODY attempt=%d] %s\n", attempt, rawResp)
-
-		// FIXME: TRIM LEADING WHITESPACE / NEWLINES
-		cleanBody := bytes.TrimLeftFunc(rawResp, func(r rune) bool {
+		rawResp = bytes.TrimLeftFunc(rawResp, func(r rune) bool {
 			return r == '\n' || r == '\r' || r == ' ' || r == '\t'
 		})
-
-		if len(cleanBody) == 0 {
-			fmt.Printf("[GPT][EMPTY CLEAN BODY attempt=%d]\n", attempt)
+		if len(rawResp) == 0 {
 			continue
 		}
 
-		// try unmarshal
 		var out orResponse
-		if err := json.Unmarshal(cleanBody, &out); err != nil {
-			fmt.Printf("[GPT][JSON-ERR attempt=%d] %v\n", attempt, err)
+		if err := json.Unmarshal(rawResp, &out); err != nil {
 			continue
 		}
 
 		if len(out.Choices) == 0 {
-			fmt.Printf("[GPT][NO CHOICES attempt=%d]\n", attempt)
 			continue
 		}
 
-		result := out.Choices[0].Message.Content
-
-		fmt.Printf("[GPT][OUT attempt=%d] %q\n", attempt, result)
-		println("[GPT] ok")
-		return result, nil
+		return out.Choices[0].Message.Content, nil
 	}
 
 	return "", fmt.Errorf("gpt failed after retries")
