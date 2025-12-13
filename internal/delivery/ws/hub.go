@@ -14,6 +14,7 @@ type Hub struct {
 }
 
 func NewHub() *Hub {
+	log.Printf("[hub] init")
 	return &Hub{
 		rooms: make(map[string]map[*websocket.Conn]bool),
 	}
@@ -25,8 +26,11 @@ func (h *Hub) Register(roomID string, conn *websocket.Conn) {
 
 	if _, ok := h.rooms[roomID]; !ok {
 		h.rooms[roomID] = make(map[*websocket.Conn]bool)
+		log.Printf("[hub] create room=%s", roomID)
 	}
+
 	h.rooms[roomID][conn] = true
+	log.Printf("[hub] register room=%s conns=%d", roomID, len(h.rooms[roomID]))
 }
 
 func (h *Hub) Unregister(roomID string, conn *websocket.Conn) {
@@ -35,31 +39,44 @@ func (h *Hub) Unregister(roomID string, conn *websocket.Conn) {
 
 	conns, ok := h.rooms[roomID]
 	if !ok {
+		log.Printf("[hub] unregister skip: no room=%s", roomID)
 		return
 	}
 
 	if _, ok := conns[conn]; ok {
 		delete(conns, conn)
 		conn.Close()
+		log.Printf("[hub] unregister room=%s conns=%d", roomID, len(conns))
 	}
 
 	if len(conns) == 0 {
 		delete(h.rooms, roomID)
+		log.Printf("[hub] delete room=%s", roomID)
 	}
 }
 
 func (h *Hub) SendToRoom(roomID string, msg []byte) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-
 	conns, ok := h.rooms[roomID]
-	if !ok {
+	connCount := len(conns)
+	h.mu.RUnlock()
+
+	// === КЛЮЧЕВОЙ ЛОГ ===
+	if !ok || connCount == 0 {
+		log.Printf("[hub][SEND-SKIP] room=%s reason=no_active_connections", roomID)
 		return
 	}
 
+	log.Printf("[hub][SEND] room=%s conns=%d bytes=%d", roomID, connCount, len(msg))
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	for conn := range conns {
 		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			log.Printf("[hub] send err room=%s: %v", roomID, err)
+			log.Printf("[hub][SEND-ERR] room=%s err=%v", roomID, err)
+		} else {
+			log.Printf("[hub][SEND-OK] room=%s", roomID)
 		}
 	}
 }
