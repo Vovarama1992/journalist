@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -93,13 +93,21 @@ func main() {
 	go func() {
 		for ev := range mediaService.Events() {
 
-			payload := []byte(
-				fmt.Sprintf(`{"mediaId":%d,"chunk":%d,"text":"%s"}`,
-					ev.MediaID,
-					ev.ChunkNumber,
-					ev.Text,
-				),
-			)
+			type wsChunk struct {
+				MediaID int    `json:"mediaId"`
+				Chunk   int    `json:"chunk"`
+				Text    string `json:"text"`
+			}
+
+			payload, err := json.Marshal(wsChunk{
+				MediaID: ev.MediaID,
+				Chunk:   ev.ChunkNumber,
+				Text:    ev.Text,
+			})
+			if err != nil {
+				log.Printf("[SEND][ERR] json marshal failed: %v", err)
+				continue
+			}
 
 			log.Printf("[SEND] room=%s chunk=%d media=%d text=%.30s",
 				ev.RoomID,
