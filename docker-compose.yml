@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: journalist_db
+    shm_size: 1gb
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-journalist}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-journalist}
+      POSTGRES_DB: ${POSTGRES_DB:-journalist}
+      PGDATA: /var/lib/postgresql/data
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c work_mem=64MB
+      -c maintenance_work_mem=128MB
+      -c max_connections=50
+      -c effective_cache_size=768MB
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+    networks:
+      - journalist_net
+
+  app:
+    build: .
+    container_name: journalist_app
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - journalist_net
+
+networks:
+  journalist_net:
